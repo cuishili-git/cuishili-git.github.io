@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  
+  <title>我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘） | 老崔的技术笔记</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="需求：手头有一堆照片型 PDF（扫描件&#x2F;图片型，无文本层），想翻译成 Word，还要求公式能双击编辑、表格还原。市面上的工具要么只处理文字型 PDF，要么公式变图片。于是自己动手写了一个。  最终效果：拖入一个 PDF，程序逐页渲染成图片 → 并发调用视觉大模型 → 组装成 docx。196 页的文档也能跑（虽然第一跑就把我 education 了一遍，后面细说）。 一、整体架构123">
+<meta property="og:type" content="article">
+<meta property="og:title" content="我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）">
+<meta property="og:url" content="https://cuishili-git.github.io/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/index.html">
+<meta property="og:site_name" content="老崔的技术笔记">
+<meta property="og:description" content="需求：手头有一堆照片型 PDF（扫描件&#x2F;图片型，无文本层），想翻译成 Word，还要求公式能双击编辑、表格还原。市面上的工具要么只处理文字型 PDF，要么公式变图片。于是自己动手写了一个。  最终效果：拖入一个 PDF，程序逐页渲染成图片 → 并发调用视觉大模型 → 组装成 docx。196 页的文档也能跑（虽然第一跑就把我 education 了一遍，后面细说）。 一、整体架构123">
+<meta property="og:locale" content="zh_CN">
+<meta property="article:published_time" content="2026-11-02T09:45:00.000Z">
+<meta property="article:modified_time" content="2026-11-02T09:46:41.379Z">
+<meta property="article:author" content="老崔">
+<meta property="article:tag" content="PDF翻译">
+<meta property="article:tag" content="PyQt6">
+<meta property="article:tag" content="python-docx">
+<meta property="article:tag" content="视觉大模型">
+<meta property="article:tag" content="调试复盘">
+<meta name="twitter:card" content="summary">
+  
+    <link rel="alternate" href="/atom.xml" title="老崔的技术笔记" type="application/atom+xml">
+  
+  
+    <link rel="shortcut icon" href="/favicon.png">
+  
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+    
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+  
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fork-awesome@1.2.0/css/fork-awesome.min.css">
+
+<meta name="generator" content="Hexo 8.1.2"></head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">老崔的技术笔记</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap">
+          <a href="/" id="subtitle">实战项目 · 调试复盘</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"><span class="fa fa-bars"></span></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+        
+          <a class="nav-icon" href="/atom.xml" title="RSS 订阅"><span class="fa fa-rss"></span></a>
+        
+        <a class="nav-icon nav-search-btn" title="搜索"><span class="fa fa-search"></span></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="搜索"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="https://cuishili-git.github.io"></form>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="outer">
+        <section id="main"><article id="post-2026-11-02-照片型PDF翻译器实战" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" class="article-date">
+  <time class="dt-published" datetime="2026-11-02T09:45:00.000Z" itemprop="datePublished">2026-11-02</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/%E5%AE%9E%E6%88%98%E9%A1%B9%E7%9B%AE/">实战项目</a>
+  </div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="p-name article-title" itemprop="headline name">
+      我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <blockquote>
+<p>需求：手头有一堆<strong>照片型 PDF</strong>（扫描件&#x2F;图片型，无文本层），想翻译成 Word，还要求公式能双击编辑、表格还原。市面上的工具要么只处理文字型 PDF，要么公式变图片。于是自己动手写了一个。</p>
+</blockquote>
+<p>最终效果：拖入一个 PDF，程序逐页渲染成图片 → 并发调用视觉大模型 → 组装成 docx。<strong>196 页的文档也能跑</strong>（虽然第一跑就把我 education 了一遍，后面细说）。</p>
+<h2 id="一、整体架构"><a href="#一、整体架构" class="headerlink" title="一、整体架构"></a>一、整体架构</h2><figure class="highlight coffeescript"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line">PDF 文件</span><br><span class="line">  │  ① PyMuPDF 逐页渲染成 PNG（<span class="number">200</span> DPI）</span><br><span class="line">  ▼</span><br><span class="line">② 线程池并发（默认 <span class="number">4</span> 页同时）调用视觉模型</span><br><span class="line">  │   输入：本页图片 + 固定提示词</span><br><span class="line">  │   输出：结构化 <span class="built_in">JSON</span>（标题<span class="regexp">/段落/</span>表格/公式）</span><br><span class="line">  ▼</span><br><span class="line">③ 解析与容错（<span class="built_in">JSON</span> 围栏剥离、单页失败重试一次）</span><br><span class="line">  ▼</span><br><span class="line">④ python-docx 组装：标题层级 / 表格 / LaTeX→OMML 原生公式</span><br><span class="line">  ▼</span><br><span class="line">输出 &lt;文件名&gt;_翻译.docx</span><br></pre></td></tr></table></figure>
+
+<p>四个关键决策：</p>
+<table>
+<thead>
+<tr>
+<th>决策点</th>
+<th>方案</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>逐页 vs 整本</td>
+<td><strong>逐页独立调用，不传上下文</strong></td>
+<td>可全并发、失败重试便宜、token 省一半以上；上下文永不超长</td>
+</tr>
+<tr>
+<td>中间格式</td>
+<td>让模型输出<strong>结构化 JSON</strong> 而不是 Markdown</td>
+<td>block 类型可控（<code>heading/para/table/formula</code>），纯 Markdown 表格和公式容易碎</td>
+</tr>
+<tr>
+<td>模型</td>
+<td>OpenAI 兼容的视觉接口（智谱&#x2F;通义&#x2F;豆包&#x2F;方舟都行）</td>
+<td>只要支持 <code>image_url</code> base64 就能接，换厂商改两个配置项</td>
+</tr>
+<tr>
+<td>公式</td>
+<td>LaTeX → MathML → OMML 嵌入 Word</td>
+<td>产物是<strong>原生公式对象</strong>，Word 里双击可编辑，不是图片</td>
+</tr>
+</tbody></table>
+<p>提示词里最重要的三条约束：</p>
+<figure class="highlight markdown"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="bullet">1.</span> 丢弃页眉、页脚、页码、水印（每页重复出现，跨页连贯性问题直接消失）</span><br><span class="line"><span class="bullet">2.</span> 表格输出为二维数组，不要用 Markdown 表格</span><br><span class="line"><span class="bullet">3.</span> 数学公式一律输出 LaTeX</span><br></pre></td></tr></table></figure>
+
+<h2 id="二、坑一：接口地址拼接出-404，196-页全灭"><a href="#二、坑一：接口地址拼接出-404，196-页全灭" class="headerlink" title="二、坑一：接口地址拼接出 404，196 页全灭"></a>二、坑一：接口地址拼接出 404，196 页全灭</h2><p>第一跑，196 页<strong>全部</strong>失败：</p>
+<figure class="highlight dart"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">✗ 第 <span class="number">1</span> 页翻译失败：<span class="number">404</span> <span class="title class_">Client</span> <span class="title class_">Error</span>: <span class="title class_">Not</span> <span class="title class_">Found</span> <span class="keyword">for</span> url:</span><br><span class="line">  https:<span class="comment">//ark.cn-beijing.volces.com/api/v3/responses/chat/completions</span></span><br></pre></td></tr></table></figure>
+
+<p>看 URL 就明白了：用户填的地址带了个 <code>/responses</code> 后缀，程序又在末尾拼 <code>/chat/completions</code>，两个一叠加就成了不存在的路径。更隐蔽的是，<strong>程序每次点开始都会把界面上的值回写进配置文件</strong>，改配置文件对已经开着的窗口不生效——我修了一版配置，用户一点开始又被旧值覆盖了。</p>
+<p>教训有两条，代码上各落了一处：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">def</span> <span class="title function_">normalize_base</span>(<span class="params">base: <span class="built_in">str</span></span>) -&gt; <span class="built_in">str</span>:</span><br><span class="line">    <span class="string">&quot;&quot;&quot;去掉误填的端点后缀，只留 API 根地址。&quot;&quot;&quot;</span></span><br><span class="line">    b = (base <span class="keyword">or</span> <span class="string">&quot;&quot;</span>).strip().rstrip(<span class="string">&quot;/&quot;</span>)</span><br><span class="line">    <span class="keyword">for</span> suffix <span class="keyword">in</span> (<span class="string">&quot;/chat/completions&quot;</span>, <span class="string">&quot;/completions&quot;</span>, <span class="string">&quot;/responses&quot;</span>, <span class="string">&quot;/chat&quot;</span>):</span><br><span class="line">        <span class="keyword">if</span> b.endswith(suffix):</span><br><span class="line">            b = b[: -<span class="built_in">len</span>(suffix)].rstrip(<span class="string">&quot;/&quot;</span>)</span><br><span class="line">            <span class="keyword">break</span></span><br><span class="line">    <span class="keyword">return</span> b</span><br></pre></td></tr></table></figure>
+
+<ol>
+<li><strong>对输入做规整</strong>，而不是要求用户填对。<code>/responses</code>、<code>/completions</code>、<code>/chat/completions</code>、裸根地址，四种填法都收敛到同一个端点。</li>
+<li><strong>报错要带服务端返回体</strong>。原来只有 <code>requests</code> 默认那句 <code>404 Client Error</code>，改成 <code>HTTP {code} {url} → {body[:300]}</code> 后，是地址错、模型名错还是 key 错，一眼可见。</li>
+</ol>
+<h2 id="三、坑二：196-页失败却重试了-784-次"><a href="#三、坑二：196-页失败却重试了-784-次" class="headerlink" title="三、坑二：196 页失败却重试了 784 次"></a>三、坑二：196 页失败却重试了 784 次</h2><p>第二个问题是<strong>止损缺失</strong>。每页失败后重试一次，196 页 × 2 &#x3D; 392 次请求，全部注定失败，日志滚了好几分钟。配置错误是”全体页面共享”的错误，不该按页重试。</p>
+<p>解法：连续失败计数 + 自动熔断。</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line">fail_streak = <span class="number">0</span></span><br><span class="line"><span class="keyword">for</span> fut <span class="keyword">in</span> as_completed(futs):</span><br><span class="line">    <span class="keyword">try</span>:</span><br><span class="line">        i, blocks = fut.result()</span><br><span class="line">        results[i] = blocks.get(<span class="string">&quot;blocks&quot;</span>, [])</span><br><span class="line">        fail_streak = <span class="number">0</span>          <span class="comment"># 成功一次就清零</span></span><br><span class="line">    <span class="keyword">except</span> Exception <span class="keyword">as</span> e:</span><br><span class="line">        fail_streak += <span class="number">1</span></span><br><span class="line">        <span class="keyword">if</span> fail_streak &gt;= <span class="number">5</span> <span class="keyword">and</span> <span class="keyword">not</span> <span class="variable language_">self</span>._cancel:</span><br><span class="line">            <span class="variable language_">self</span>._cancel = <span class="literal">True</span>   <span class="comment"># 连续 5 页失败 = 配置错误，熔断</span></span><br><span class="line">            <span class="keyword">for</span> f <span class="keyword">in</span> futs:</span><br><span class="line">                f.cancel()        <span class="comment"># 未启动的任务全部取消</span></span><br></pre></td></tr></table></figure>
+
+<p>注意用「<strong>连续</strong>失败」而不是「累计失败」：正常翻译中个别难页失败重试是合理的，累计计数会误伤。</p>
+<h2 id="四、坑三：QSpinBox-隐藏按钮后，数字不渲染了"><a href="#四、坑三：QSpinBox-隐藏按钮后，数字不渲染了" class="headerlink" title="四、坑三：QSpinBox 隐藏按钮后，数字不渲染了"></a>四、坑三：QSpinBox 隐藏按钮后，数字不渲染了</h2><p>GUI 侧的坑。给参数输入框去掉了 QSpinBox 自带的上下箭头（QSS 下渲染成怪异竖条）：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">sp.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)</span><br></pre></td></tr></table></figure>
+
+<p>结果离屏截图里<strong>框是空的</strong>——<code>value()</code> 明明是 4，<code>text()</code> 也返回 “4”，就是不画出来。抓了 3 倍放大图确认：这是 Qt 在 <code>NoButtons</code> 模式下编辑区布局的老毛病。</p>
+<p>解法：不跟 QSpinBox 纠缠，直接换成 <code>QLineEdit + QIntValidator</code>：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="variable language_">self</span>.sp_conc = QLineEdit(<span class="string">&quot;4&quot;</span>)</span><br><span class="line"><span class="variable language_">self</span>.sp_conc.setValidator(QIntValidator(<span class="number">1</span>, <span class="number">16</span>, <span class="variable language_">self</span>))</span><br></pre></td></tr></table></figure>
+
+<p>损失了滚轮步进，换来了所见即所得。调试 GUI 的经验：<strong>先抓部件级放大截图，再下结论</strong>，很多”没显示”其实是”画了但看不见”。</p>
+<h2 id="五、验证：真实调用跑通"><a href="#五、验证：真实调用跑通" class="headerlink" title="五、验证：真实调用跑通"></a>五、验证：真实调用跑通</h2><p>修完地址后，用一张 400×200 的测试页做了端到端验证（成本几分钱）：</p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// 模型：deepseek-v4-1-flash（火山方舟，支持视觉输入）</span></span><br><span class="line"><span class="punctuation">[</span><span class="punctuation">&#123;</span><span class="attr">&quot;type&quot;</span><span class="punctuation">:</span> <span class="string">&quot;heading&quot;</span><span class="punctuation">,</span> <span class="attr">&quot;level&quot;</span><span class="punctuation">:</span> <span class="number">1</span><span class="punctuation">,</span> <span class="attr">&quot;text&quot;</span><span class="punctuation">:</span> <span class="string">&quot;第1章 系统概述&quot;</span><span class="punctuation">&#125;</span><span class="punctuation">,</span></span><br><span class="line"> <span class="punctuation">&#123;</span><span class="attr">&quot;type&quot;</span><span class="punctuation">:</span> <span class="string">&quot;para&quot;</span><span class="punctuation">,</span> <span class="attr">&quot;text&quot;</span><span class="punctuation">:</span> <span class="string">&quot;电压：220 V  频率：50 Hz&quot;</span><span class="punctuation">&#125;</span><span class="punctuation">,</span></span><br><span class="line"> <span class="punctuation">&#123;</span><span class="attr">&quot;type&quot;</span><span class="punctuation">:</span> <span class="string">&quot;formula&quot;</span><span class="punctuation">,</span> <span class="attr">&quot;latex&quot;</span><span class="punctuation">:</span> <span class="string">&quot;E = mc^2&quot;</span><span class="punctuation">&#125;</span><span class="punctuation">]</span></span><br></pre></td></tr></table></figure>
+
+<p>翻译、公式、结构全部正确。技术栈清单：</p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>选型</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GUI</td>
+<td>PyQt6</td>
+</tr>
+<tr>
+<td>PDF 渲染</td>
+<td>PyMuPDF（新包名 <code>pymupdf</code>，旧名 <code>fitz</code> 已废弃）</td>
+</tr>
+<tr>
+<td>模型调用</td>
+<td>requests + OpenAI 兼容接口，线程池并发 4</td>
+</tr>
+<tr>
+<td>docx 组装</td>
+<td>python-docx + latex2mathml + mathml2omml</td>
+</tr>
+</tbody></table>
+<h2 id="六、小结"><a href="#六、小结" class="headerlink" title="六、小结"></a>六、小结</h2><p>三件事值得记住：</p>
+<ol>
+<li><strong>对接第三方 API，永远对用户输入做规整</strong>，报错永远带上响应体；</li>
+<li><strong>批处理要有熔断</strong>，”连续失败”是识别配置错误的最可靠信号；</li>
+<li><strong>Qt 控件反直觉行为，用最小复现 + 部件级截图排查</strong>，别信”值在就行”。</li>
+</ol>
+<p>后续计划：表格跨页自动合并、插图原图回填、页眉页脚二次清洗。有问题欢迎评论区交流。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://cuishili-git.github.io/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" data-id="cuid6TPMhMkts4r0KIOsBYn6q" data-title="我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+  
+</article>
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%AE%9E%E6%88%98%E9%A1%B9%E7%9B%AE/">实战项目</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签</h3>
+    <div class="widget">
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 10px;">调试复盘</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/11/">十一月 2026</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">最新文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/">我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      
+      &copy; 2026 老崔<br>
+      Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+
+<script src="/js/jquery-3.6.4.min.js"></script>
+
+
+
+  
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+<script src="/js/script.js"></script>
+
+
+
+
+
+  </div>
+</body>
+</html>
