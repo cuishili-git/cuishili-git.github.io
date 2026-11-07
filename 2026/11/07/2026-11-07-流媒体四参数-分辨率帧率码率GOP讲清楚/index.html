@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  
+  <title>分辨率、帧率、码率、GOP：视频参数一次讲明白 | 老崔的技术笔记</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="写给第一次接触摄像头和视频编码的人。读完你应该能看懂这一行参数： 2112×1568  25fps  4096kbps  GOP 50 以及知道为什么改了其中一个，另外三个会跟着变。   开篇：一个寄画的比喻假设你要给远方的朋友寄手绘连环画，每周寄一次。你会被四个问题卡住：    你的处境 对应的视频参数    每张纸画多大？格子越多，细节越多，但画得慢、纸也重 分辨率   每秒画几张？画得越快">
+<meta property="og:type" content="article">
+<meta property="og:title" content="分辨率、帧率、码率、GOP：视频参数一次讲明白">
+<meta property="og:url" content="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%B5%81%E5%AA%92%E4%BD%93%E5%9B%9B%E5%8F%82%E6%95%B0-%E5%88%86%E8%BE%A8%E7%8E%87%E5%B8%A7%E7%8E%87%E7%A0%81%E7%8E%87GOP%E8%AE%B2%E6%B8%85%E6%A5%9A/index.html">
+<meta property="og:site_name" content="老崔的技术笔记">
+<meta property="og:description" content="写给第一次接触摄像头和视频编码的人。读完你应该能看懂这一行参数： 2112×1568  25fps  4096kbps  GOP 50 以及知道为什么改了其中一个，另外三个会跟着变。   开篇：一个寄画的比喻假设你要给远方的朋友寄手绘连环画，每周寄一次。你会被四个问题卡住：    你的处境 对应的视频参数    每张纸画多大？格子越多，细节越多，但画得慢、纸也重 分辨率   每秒画几张？画得越快">
+<meta property="og:locale" content="zh_CN">
+<meta property="article:published_time" content="2026-11-07T03:49:35.000Z">
+<meta property="article:modified_time" content="2026-11-07T03:49:35.656Z">
+<meta property="article:author" content="老崔">
+<meta property="article:tag" content="H.264">
+<meta property="article:tag" content="新人向">
+<meta property="article:tag" content="流媒体">
+<meta property="article:tag" content="视频编码">
+<meta name="twitter:card" content="summary">
+  
+    <link rel="alternate" href="/atom.xml" title="老崔的技术笔记" type="application/atom+xml">
+  
+  
+    <link rel="shortcut icon" href="/favicon.png">
+  
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+    
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+  
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fork-awesome@1.2.0/css/fork-awesome.min.css">
+
+<meta name="generator" content="Hexo 8.1.2"></head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">老崔的技术笔记</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap">
+          <a href="/" id="subtitle">实战项目 · 调试复盘</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"><span class="fa fa-bars"></span></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+        
+          <a class="nav-icon" href="/atom.xml" title="RSS 订阅"><span class="fa fa-rss"></span></a>
+        
+        <a class="nav-icon nav-search-btn" title="搜索"><span class="fa fa-search"></span></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="搜索"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="https://cuishili-git.github.io"></form>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="outer">
+        <section id="main"><article id="post-2026-11-07-流媒体四参数-分辨率帧率码率GOP讲清楚" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2026/11/07/2026-11-07-%E6%B5%81%E5%AA%92%E4%BD%93%E5%9B%9B%E5%8F%82%E6%95%B0-%E5%88%86%E8%BE%A8%E7%8E%87%E5%B8%A7%E7%8E%87%E7%A0%81%E7%8E%87GOP%E8%AE%B2%E6%B8%85%E6%A5%9A/" class="article-date">
+  <time class="dt-published" datetime="2026-11-07T03:49:35.000Z" itemprop="datePublished">2026-11-07</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/">技术笔记</a>
+  </div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="p-name article-title" itemprop="headline name">
+      分辨率、帧率、码率、GOP：视频参数一次讲明白
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <blockquote>
+<p>写给第一次接触摄像头和视频编码的人。读完你应该能看懂这一行参数：</p>
+<p><code>2112×1568  25fps  4096kbps  GOP 50</code></p>
+<p>以及知道<strong>为什么改了其中一个，另外三个会跟着变</strong>。</p>
+</blockquote>
+<hr>
+<h2 id="开篇：一个寄画的比喻"><a href="#开篇：一个寄画的比喻" class="headerlink" title="开篇：一个寄画的比喻"></a>开篇：一个寄画的比喻</h2><p>假设你要给远方的朋友寄手绘连环画，每周寄一次。你会被四个问题卡住：</p>
+<table>
+<thead>
+<tr>
+<th>你的处境</th>
+<th>对应的视频参数</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>每张纸画多大？格子越多，细节越多，但画得慢、纸也重</td>
+<td><strong>分辨率</strong></td>
+</tr>
+<tr>
+<td>每秒画几张？画得越快越流畅，但纸消耗得也快</td>
+<td><strong>帧率</strong></td>
+</tr>
+<tr>
+<td>每秒最多能寄多少克纸？邮局有重量限制</td>
+<td><strong>码率</strong></td>
+</tr>
+<tr>
+<td>每多少张重画一幅完整的？总不能张张都重画</td>
+<td><strong>GOP</strong></td>
+</tr>
+</tbody></table>
+<p>这四个问题不是独立的。你把纸画大一倍，重量就涨；画得更快，重量也涨；但邮局限重，所以你要么画小点、要么画慢点、要么想办法”只画改动的地方”（压缩）。</p>
+<p><strong>视频编码做的全部事情，就是想尽办法用更少的重量寄出更好看的画。</strong></p>
+<p>下面逐个说。</p>
+<hr>
+<h2 id="第-1-章-分辨率：一帧图片有多少个格子"><a href="#第-1-章-分辨率：一帧图片有多少个格子" class="headerlink" title="第 1 章 分辨率：一帧图片有多少个格子"></a>第 1 章 分辨率：一帧图片有多少个格子</h2><h3 id="1-1-它到底是什么"><a href="#1-1-它到底是什么" class="headerlink" title="1.1 它到底是什么"></a>1.1 它到底是什么</h3><p><code>1920×1080</code> 的意思是：这一帧画面被切成<strong>横向 1920 格、纵向 1080 格</strong>，一共 207 万个格子。每个格子叫一个<strong>像素</strong>，每个像素记录一个颜色。</p>
+<p>格子越多，画面能容纳的细节越多。就这么简单。</p>
+<h3 id="1-2-常见的档位"><a href="#1-2-常见的档位" class="headerlink" title="1.2 常见的档位"></a>1.2 常见的档位</h3><table>
+<thead>
+<tr>
+<th>写法</th>
+<th>别称</th>
+<th>像素数</th>
+<th>大概是几倍 720p</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>640×360</td>
+<td>360p</td>
+<td>23 万</td>
+<td>0.25 倍</td>
+</tr>
+<tr>
+<td>1280×720</td>
+<td>720p &#x2F; 高清</td>
+<td>92 万</td>
+<td>1 倍</td>
+</tr>
+<tr>
+<td>1920×1080</td>
+<td>1080p &#x2F; 全高清</td>
+<td>207 万</td>
+<td>2.25 倍</td>
+</tr>
+<tr>
+<td>2112×1568</td>
+<td>约 330 万</td>
+<td>331 万</td>
+<td>3.6 倍</td>
+</tr>
+<tr>
+<td>2560×1440</td>
+<td>2K</td>
+<td>369 万</td>
+<td>4 倍</td>
+</tr>
+<tr>
+<td>3840×2160</td>
+<td>4K</td>
+<td>829 万</td>
+<td>9 倍</td>
+</tr>
+<tr>
+<td>4224×3136</td>
+<td>约 1300 万</td>
+<td>1325 万</td>
+<td>14.4 倍</td>
+</tr>
+</tbody></table>
+<p>记住一个量级关系：<strong>4K 的像素数是 1080p 的 4 倍</strong>（3840×2160 ÷ 1920×1080 &#x3D; 4）。所以后面所有的开销，4K 都是 1080p 的 4 倍起。</p>
+<h3 id="1-3-第一个坑：宽高比不能随便改"><a href="#1-3-第一个坑：宽高比不能随便改" class="headerlink" title="1.3 第一个坑：宽高比不能随便改"></a>1.3 第一个坑：宽高比不能随便改</h3><p>像素格子的<strong>形状</strong>由宽高比决定。常见两种：</p>
+<ul>
+<li><strong>16:9</strong>（1920×1080、1280×720、3840×2160）—— 电影、电视、网页</li>
+<li><strong>4:3</strong>（640×480、1600×1200）—— 早期显示器、很多工业相机</li>
+</ul>
+<p>如果你把 16:9 的镜头硬配成 4:3 的输出，或者反过来，画面里的人脸会被<strong>压扁或拉长</strong>。</p>
+<p>更要命的是：<strong>驱动不会报错</strong>。你请求 <code>1920×1080</code>，它回你 <code>1920×1080</code>，看起来完全成功，画面却是变形的。</p>
+<blockquote>
+<p>判断方法：算一下 <code>宽 ÷ 高</code>。1728÷1080 &#x3D; 1.6（变形了），1920÷1080 &#x3D; 1.78（正常）。拿计算器和 sensor 的规格书对一下。</p>
+</blockquote>
+<h3 id="1-4-第二个坑：原生分辨率和输出分辨率是两回事"><a href="#1-4-第二个坑：原生分辨率和输出分辨率是两回事" class="headerlink" title="1.4 第二个坑：原生分辨率和输出分辨率是两回事"></a>1.4 第二个坑：原生分辨率和输出分辨率是两回事</h3><p>摄像头里的图像传感器（sensor）有一个<strong>物理固定的</strong>像素阵列，这个数字改不了。你能改的只是它<strong>输出</strong>多大。</p>
+<p>以本机为例：</p>
+<figure class="highlight yaml"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="string">OV13855</span> <span class="string">传感器原生</span>    <span class="number">4224</span> <span class="string">×</span> <span class="number">3136</span>  <span class="string">（比例</span> <span class="number">1.347</span><span class="string">）</span></span><br><span class="line">        <span class="string">↓</span> <span class="string">二分频</span></span><br><span class="line"><span class="string">ISP</span> <span class="string">输出</span>              <span class="number">2112</span> <span class="string">×</span> <span class="number">1568</span>  <span class="string">（比例</span> <span class="number">1.347</span><span class="string">，精确一半）</span></span><br><span class="line">        <span class="string">↓</span></span><br><span class="line"><span class="string">编码器输出</span>            <span class="number">2112</span> <span class="string">×</span> <span class="number">1568</span>  <span class="string">（跟随）</span></span><br></pre></td></tr></table></figure>
+
+<p><code>4224÷2 = 2112</code>、<code>3136÷2 = 1568</code>，整除得干干净净。选这个值不是巧合，<strong>整数分频不会引入额外的插值模糊</strong>。</p>
+<p>如果你请求 <code>1920×1080</code>，ISP 会从 4224×3136 里裁一块或者缩放，既丢视野又可能糊。</p>
+<h3 id="1-5-一句话记住"><a href="#1-5-一句话记住" class="headerlink" title="1.5 一句话记住"></a>1.5 一句话记住</h3><blockquote>
+<p><strong>分辨率决定”能装多少细节”，不决定”细节够不够清楚”。</strong></p>
+<p>镜头脏了、没对上焦、光线不够，8K 也救不回来。</p>
+</blockquote>
+<hr>
+<h2 id="第-2-章-帧率：每秒翻几页"><a href="#第-2-章-帧率：每秒翻几页" class="headerlink" title="第 2 章 帧率：每秒翻几页"></a>第 2 章 帧率：每秒翻几页</h2><h3 id="2-1-它到底是什么"><a href="#2-1-它到底是什么" class="headerlink" title="2.1 它到底是什么"></a>2.1 它到底是什么</h3><p><code>25fps</code>（frames per second）表示<strong>每秒 25 张画面</strong>。视频不是”动的画”，而是”快速翻页的连环画”，一秒翻够多页，眼睛就觉得它在动。</p>
+<h3 id="2-2-各档位的观感"><a href="#2-2-各档位的观感" class="headerlink" title="2.2 各档位的观感"></a>2.2 各档位的观感</h3><table>
+<thead>
+<tr>
+<th>帧率</th>
+<th>观感</th>
+<th>常见于</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>5 ~ 10</td>
+<td>明显卡顿，像幻灯片</td>
+<td>低功耗抓拍、静态监控</td>
+</tr>
+<tr>
+<td>15</td>
+<td>有点顿，能看出跳帧</td>
+<td>手机预览、低带宽子码流</td>
+</tr>
+<tr>
+<td>24</td>
+<td>电影感，运动有轻微拖影</td>
+<td>电影</td>
+</tr>
+<tr>
+<td>25</td>
+<td>电视&#x2F;监控标准</td>
+<td>安防、PAL 制式国家</td>
+</tr>
+<tr>
+<td>30</td>
+<td>顺滑</td>
+<td>网络视频、NTSC 制式国家</td>
+</tr>
+<tr>
+<td>60</td>
+<td>非常顺滑</td>
+<td>游戏、高速运动</td>
+</tr>
+</tbody></table>
+<h3 id="2-3-为什么监控爱用-25fps"><a href="#2-3-为什么监控爱用-25fps" class="headerlink" title="2.3 为什么监控爱用 25fps"></a>2.3 为什么监控爱用 25fps</h3><p>两个原因叠加：</p>
+<ol>
+<li><strong>历史</strong>：中国用的是 PAL 电视制式，场频 50Hz，一帧两场，于是 50÷2 &#x3D; 25 帧。</li>
+<li><strong>供电</strong>：中国电网 50Hz，室内的 LED 灯、日光灯每秒闪 100 次。曝光时间取 10ms 的整数倍（10&#x2F;20&#x2F;30&#x2F;40ms）正好和灯的闪烁周期对齐，画面不会有横条。25fps 的帧间隔是 40ms，正好是 10ms 的整数倍。</li>
+</ol>
+<p>这就是为什么很多摄像头有个”抗闪烁 50Hz”选项——它就是在强制曝光值落在 10ms 的整数倍上。</p>
+<h3 id="2-4-最容易忽略的一层：帧率是曝光时间的上限"><a href="#2-4-最容易忽略的一层：帧率是曝光时间的上限" class="headerlink" title="2.4 最容易忽略的一层：帧率是曝光时间的上限"></a>2.4 最容易忽略的一层：帧率是曝光时间的上限</h3><p>这是新手最容易漏掉、但排查问题最常用的一条：</p>
+<figure class="highlight abnf"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">帧间隔 <span class="operator">=</span> <span class="number">1</span> ÷ fps</span><br><span class="line">一帧的曝光时间 必须 ≤ 帧间隔</span><br></pre></td></tr></table></figure>
+
+<ul>
+<li>25fps → 帧间隔 40ms → 曝光最多 40ms</li>
+<li>15fps → 帧间隔 66.7ms → 曝光最多 66.7ms</li>
+<li>30fps → 帧间隔 33.3ms → 曝光最多 33.3ms</li>
+</ul>
+<p>曝光时间越长，进的光越多，画面越亮。</p>
+<p>所以：<strong>画面太暗时，降低帧率是有效手段</strong>，因为降帧率等于给每帧更长的曝光窗口。反之，夜间把帧率从 30 提到 60，画面会明显变暗。</p>
+<p>这条规律还能解释一类诡异现象：如果场景亮度正好卡在两档曝光之间，而抗闪烁又只允许 10ms 的整数倍，画面就会在”20ms 那档（偏暗）”和”30ms 那档（偏亮）”之间反复横跳，看起来像<strong>一闪一闪</strong>。</p>
+<h3 id="2-5-实测：配了-25fps，实际跑-30fps"><a href="#2-5-实测：配了-25fps，实际跑-30fps" class="headerlink" title="2.5 实测：配了 25fps，实际跑 30fps"></a>2.5 实测：配了 25fps，实际跑 30fps</h3><p>这是本机的真实情况：</p>
+<figure class="highlight gml"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">库里的配置            <span class="number">25</span> <span class="variable language_">fps</span></span><br><span class="line">服务端日志            <span class="variable language_">fps</span> [<span class="number">25</span>:<span class="number">25</span>]</span><br><span class="line">GStreamer 管线的 caps framerate=<span class="number">25</span>/<span class="number">1</span></span><br><span class="line">────────────────────────────────</span><br><span class="line">实测（<span class="number">12</span> 秒抓 <span class="number">360</span> 帧） <span class="number">30.0</span> <span class="variable language_">fps</span></span><br></pre></td></tr></table></figure>
+
+<p><strong>三层都写了 25，实际还是 30。</strong> 原因是采集端的 <code>v4l2src</code> 上，某些 ISP 输出节点并不真的按 caps 里的帧率去限速，它跟着 sensor 出多少帧就走多少帧。</p>
+<p>这个现象带来一个连锁反应，下一章会讲。</p>
+<h3 id="2-6-一句话记住"><a href="#2-6-一句话记住" class="headerlink" title="2.6 一句话记住"></a>2.6 一句话记住</h3><blockquote>
+<p><strong>帧率不只是”流畅度”，它还是曝光时间的天花板。</strong></p>
+</blockquote>
+<hr>
+<h2 id="第-3-章-码率：每秒寄出去多少数据"><a href="#第-3-章-码率：每秒寄出去多少数据" class="headerlink" title="第 3 章 码率：每秒寄出去多少数据"></a>第 3 章 码率：每秒寄出去多少数据</h2><h3 id="3-1-它到底是什么"><a href="#3-1-它到底是什么" class="headerlink" title="3.1 它到底是什么"></a>3.1 它到底是什么</h3><p><code>4096 kbps</code> 的意思是：<strong>这一秒内，编码器平均吐出了 4096 千个比特</strong>。</p>
+<p>注意是”平均”。视频码率是波动的——画面剧烈变化的那一秒会超，静止不动的那一秒会省。</p>
+<h3 id="3-2-单位换算（新人第一坑，差了整整-8-倍）"><a href="#3-2-单位换算（新人第一坑，差了整整-8-倍）" class="headerlink" title="3.2 单位换算（新人第一坑，差了整整 8 倍）"></a>3.2 单位换算（新人第一坑，差了整整 8 倍）</h3><table>
+<thead>
+<tr>
+<th>写法</th>
+<th>读法</th>
+<th>等于多少 Mbps</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>4096 kbps</td>
+<td>千<strong>比特</strong>每秒</td>
+<td>4.096</td>
+</tr>
+<tr>
+<td>4 Mbps</td>
+<td>兆<strong>比特</strong>每秒</td>
+<td>4</td>
+</tr>
+<tr>
+<td>512 KB&#x2F;s</td>
+<td>千<strong>字节</strong>每秒</td>
+<td>4.096</td>
+</tr>
+<tr>
+<td>0.5 MB&#x2F;s</td>
+<td>兆<strong>字节</strong>每秒</td>
+<td>4</td>
+</tr>
+</tbody></table>
+<p>记忆口诀：</p>
+<figure class="highlight dns"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="number">1</span> 字节<span class="punctuation">(</span>B<span class="punctuation">)</span> = <span class="number">8</span> 比特<span class="punctuation">(</span>bit<span class="punctuation">)</span></span><br><span class="line">所以：KB/s × <span class="number">8</span> = kbps</span><br></pre></td></tr></table></figure>
+
+<p>生活中的对照：运营商说的”千兆宽带”是 1000 Mbps，理论下载速度上限是 <code>1000 ÷ 8 = 125 MB/s</code>。这就是为什么千兆宽带下载只有一百多兆每秒。</p>
+<h3 id="3-3-为什么必须压缩"><a href="#3-3-为什么必须压缩" class="headerlink" title="3.3 为什么必须压缩"></a>3.3 为什么必须压缩</h3><p>拿本机主码流算一遍，假设<strong>完全不压缩</strong>：</p>
+<figure class="highlight tap"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">单帧大小 =<span class="number"> 2112 </span>×<span class="number"> 1568 </span>× 1.5 字节</span><br><span class="line">         = 4,967,424 字节</span><br><span class="line">         ≈ 4.74 MB</span><br><span class="line"></span><br><span class="line">每秒<span class="number"> 30 </span>帧 =<span class="number"> 142 </span>MB/s</span><br><span class="line">换成比特     = 1.19 Gbps</span><br></pre></td></tr></table></figure>
+
+<p><code>1.19 Gbps</code> 是什么概念？<strong>千兆网口插满也传不动。</strong> 硬盘也扛不住连续写 142 MB&#x2F;s。</p>
+<p>所以必须压缩。压缩后是 5 Mbps 左右，比值是：</p>
+<figure class="highlight basic"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="symbol">1190 </span>Mbps ÷ <span class="number">5.06</span> Mbps ≈ <span class="number">235</span> : <span class="number">1</span></span><br></pre></td></tr></table></figure>
+
+<p><strong>235 倍的压缩</strong>，而且肉眼看着还不错。这就是 H.264 这个标准值钱的地方。</p>
+<h3 id="3-4-码率不是”配”出来的，是”算”出来的"><a href="#3-4-码率不是”配”出来的，是”算”出来的" class="headerlink" title="3.4 码率不是”配”出来的，是”算”出来的"></a>3.4 码率不是”配”出来的，是”算”出来的</h3><p>这是理解码率的关键转念：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">分辨率 × 帧率  →  原始数据量</span><br><span class="line">                     ↓</span><br><span class="line">                  压缩算法</span><br><span class="line">                     ↓</span><br><span class="line">                   码率</span><br></pre></td></tr></table></figure>
+
+<p>码率是<strong>结果</strong>。你在界面上填一个数字，其实是告诉编码器”我每秒最多只给你这么多字节，你自己看着办”。</p>
+<p>编码器拿到这个预算后，会去调<strong>量化参数（QP）</strong>：预算宽裕就画得精细，预算紧张就把细节抹平。所以<strong>码率配小了，画面就糊</strong>，不是”文件变小”这么无害。</p>
+<h3 id="3-5-怎么判断码率配得合不合理：bpp"><a href="#3-5-怎么判断码率配得合不合理：bpp" class="headerlink" title="3.5 怎么判断码率配得合不合理：bpp"></a>3.5 怎么判断码率配得合不合理：bpp</h3><p>死记”1080p 配 4M”很容易记错，因为 4K、高帧率都要重算。有个更通用的标尺：</p>
+<figure class="highlight abnf"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="attribute">bpp</span> <span class="operator">=</span> 码率 ÷ (宽 × 高 × 帧率)</span><br></pre></td></tr></table></figure>
+
+<p>bpp 是”每个像素分到多少比特”。它把三个参数一起算了，所以跨分辨率可比。</p>
+<table>
+<thead>
+<tr>
+<th>bpp</th>
+<th>画质</th>
+<th>典型用途</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>&lt; 0.03</td>
+<td>一团糊</td>
+<td>基本不可用</td>
+</tr>
+<tr>
+<td>0.03 ~ 0.05</td>
+<td>能看，细节丢失</td>
+<td>低码率预览</td>
+</tr>
+<tr>
+<td><strong>0.05 ~ 0.10</strong></td>
+<td>监控常规</td>
+<td>绝大多数场景</td>
+</tr>
+<tr>
+<td>0.10 ~ 0.20</td>
+<td>高质量</td>
+<td>车牌、人脸识别</td>
+</tr>
+<tr>
+<td>&gt; 0.20</td>
+<td>接近视觉无损</td>
+<td>一般就是浪费</td>
+</tr>
+</tbody></table>
+<p>本机实测：</p>
+<table>
+<thead>
+<tr>
+<th>码流</th>
+<th>分辨率</th>
+<th>实际帧率</th>
+<th>实测码率</th>
+<th>bpp</th>
+<th>评价</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>主</td>
+<td>2112×1568</td>
+<td>30.0</td>
+<td>5060 kbps</td>
+<td>0.051</td>
+<td>监控常规下限</td>
+</tr>
+<tr>
+<td>子</td>
+<td>1280×720</td>
+<td>29.8</td>
+<td>1967 kbps</td>
+<td>0.072</td>
+<td>正常</td>
+</tr>
+</tbody></table>
+<h3 id="3-6-帧率没生效，码率就超了"><a href="#3-6-帧率没生效，码率就超了" class="headerlink" title="3.6 帧率没生效，码率就超了"></a>3.6 帧率没生效，码率就超了</h3><p>回到 2.5 节那个现象。库里配 4096 kbps，实测 5060 kbps，超了 23%。为什么？</p>
+<p>因为码控是<strong>按配置的帧率分配每帧预算</strong>的：</p>
+<figure class="highlight tap"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">每帧预算 =<span class="number"> 4096 </span>kbps ÷<span class="number"> 25 </span>fps = 163,840 bit = 20,480 字节 =<span class="number"> 20 </span>KB</span><br></pre></td></tr></table></figure>
+
+<p>编码器老老实实按”每帧 20.5 KB”来编。但实际每秒来了 30 帧，于是：</p>
+<figure class="highlight basic"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="symbol">30 </span>帧 × <span class="number">20</span> KB × <span class="number">8</span> = <span class="number">4</span>,<span class="number">915</span> kbps</span><br></pre></td></tr></table></figure>
+
+<p><strong>每帧的质量没变，只是帧数多了 20%，总码率就跟着多 20%。</strong> 实测 5060 比计算值 4915 略高，是画面复杂度波动造成的，方向一致。</p>
+<p>这个规律很好用：<strong>实测码率 ÷ 配置码率 ≈ 实际帧率 ÷ 配置帧率</strong>。以后看到码率对不上，先算这个比值，能立刻定位是不是帧率的问题。</p>
+<h3 id="3-7-一句话记住"><a href="#3-7-一句话记住" class="headerlink" title="3.7 一句话记住"></a>3.7 一句话记住</h3><blockquote>
+<p><strong>码率是结果，不是原因。它是”分辨率 × 帧率”被压缩之后剩下的东西。</strong></p>
+</blockquote>
+<hr>
+<h2 id="第-4-章-GOP：多久重画一整幅"><a href="#第-4-章-GOP：多久重画一整幅" class="headerlink" title="第 4 章 GOP：多久重画一整幅"></a>第 4 章 GOP：多久重画一整幅</h2><p>前面三章都是常识范围内的概念，这一章是真正的分水岭。</p>
+<h3 id="4-1-视频不是一堆独立的图片"><a href="#4-1-视频不是一堆独立的图片" class="headerlink" title="4.1 视频不是一堆独立的图片"></a>4.1 视频不是一堆独立的图片</h3><p>如果每一帧都独立压缩，那就是”每秒 30 张 JPEG”，压缩率上不去。H.264 的核心思路是：</p>
+<blockquote>
+<p><strong>第一帧完整画，后面只画”和上一帧不一样的地方”。</strong></p>
+</blockquote>
+<p>于是有了三种帧：</p>
+<table>
+<thead>
+<tr>
+<th>帧类型</th>
+<th>中文</th>
+<th>怎么编的</th>
+<th>大小</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>I 帧</strong></td>
+<td>关键帧 &#x2F; 帧内编码</td>
+<td>完整画一张，不参考别人</td>
+<td>大</td>
+</tr>
+<tr>
+<td><strong>P 帧</strong></td>
+<td>前向预测帧</td>
+<td>只记录”和前面比变了什么”</td>
+<td>小</td>
+</tr>
+<tr>
+<td><strong>B 帧</strong></td>
+<td>双向预测帧</td>
+<td>参考前后两帧（会增加延迟）</td>
+<td>更小</td>
+</tr>
+</tbody></table>
+<p>用寄画来类比：I 帧是”整幅重画”，P 帧是”上一张上改几笔”。</p>
+<h3 id="4-2-GOP-就是两个-I-帧之间的距离"><a href="#4-2-GOP-就是两个-I-帧之间的距离" class="headerlink" title="4.2 GOP 就是两个 I 帧之间的距离"></a>4.2 GOP 就是两个 I 帧之间的距离</h3><figure class="highlight tap"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">帧序号: <span class="number"> 0 </span>  <span class="number"> 1 </span>  <span class="number"> 2 </span>  <span class="number"> 3 </span> ... <span class="number"> 49 </span> <span class="number"> 50 </span> <span class="number"> 51 </span> <span class="number"> 52 </span> ...</span><br><span class="line">         I    P    P    P        P    I    P    P</span><br><span class="line">         └──────── 一个 GOP ────────┘</span><br><span class="line">         ←────── GOP 长度 =<span class="number"> 50 </span>帧 ──────→</span><br></pre></td></tr></table></figure>
+
+<p>配置里的 <code>gop=50</code> 就是这个意思：<strong>每 50 帧插一个 I 帧</strong>。</p>
+<p>注意：GOP 的单位是<strong>帧数</strong>，不是秒数。50 帧在 25fps 下是 2 秒，在 30fps 下只有 1.67 秒。</p>
+<h3 id="4-3-实测：本机码流的真实帧结构"><a href="#4-3-实测：本机码流的真实帧结构" class="headerlink" title="4.3 实测：本机码流的真实帧结构"></a>4.3 实测：本机码流的真实帧结构</h3><p>抓 12 秒主码流（收到 360 帧，其中 354 帧完整可解析），用 <code>ffprobe</code> 逐帧统计：</p>
+<figure class="highlight less"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">总帧数: <span class="number">354</span>  |  <span class="selector-tag">I</span> 帧 <span class="number">8</span> 个，<span class="selector-tag">P</span> 帧 <span class="number">346</span> 个，<span class="selector-tag">B</span> 帧 <span class="number">0</span> 个</span><br><span class="line"><span class="selector-tag">I</span> 帧位置(帧序号): <span class="number">0</span>, <span class="number">50</span>, <span class="number">100</span>, <span class="number">150</span>, <span class="number">200</span>, <span class="number">250</span>, <span class="number">300</span>, <span class="number">350</span></span><br><span class="line"><span class="selector-tag">GOP</span> 长度:         <span class="number">50</span>, <span class="number">50</span>, <span class="number">50</span>, <span class="number">50</span>, <span class="number">50</span>, <span class="number">50</span>, <span class="number">50</span></span><br></pre></td></tr></table></figure>
+
+<p><strong>GOP 严格 50 帧，一个不差</strong>，和配置的 <code>gop=50</code> 完全对应。</p>
+<p>再看大小：</p>
+<table>
+<thead>
+<tr>
+<th>帧类型</th>
+<th>平均大小</th>
+<th>占总量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>I 帧</td>
+<td>169,972 字节（166 KB）</td>
+<td>18.2%</td>
+</tr>
+<tr>
+<td>P 帧</td>
+<td>17,668 字节（17.3 KB）</td>
+<td>81.8%</td>
+</tr>
+</tbody></table>
+<p><strong>I 帧是 P 帧的 9.6 倍大。</strong> 折算下来：</p>
+<figure class="highlight apache"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="attribute">I</span> 帧:  <span class="number">166</span> KB  ÷  <span class="number">4</span>.<span class="number">74</span> MB（未压缩单帧） = 压缩 <span class="number">29</span> 倍</span><br><span class="line"><span class="attribute">P</span> 帧:  <span class="number">17</span>.<span class="number">3</span> KB ÷  <span class="number">4</span>.<span class="number">74</span> MB（未压缩单帧） = 压缩 <span class="number">281</span> 倍</span><br></pre></td></tr></table></figure>
+
+<p>P 帧的压缩效率是 I 帧的十倍。这就解释了一切：<strong>为什么不能每帧都是 I 帧</strong>（码率会涨十倍），也<strong>为什么 GOP 不能无限大</strong>（下一节说）。</p>
+<h3 id="4-4-各-GOP-的实际码率波动"><a href="#4-4-各-GOP-的实际码率波动" class="headerlink" title="4.4 各 GOP 的实际码率波动"></a>4.4 各 GOP 的实际码率波动</h3><p>同一个 12 秒抓包，拆成 8 个 GOP 看：</p>
+<figure class="highlight dns"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">GOP#<span class="number">1</span>  帧数=<span class="number">50</span>  字节=<span class="number">1</span>,<span class="number">009</span>,<span class="number">153</span>  首帧<span class="punctuation">(</span>I<span class="punctuation">)</span>=<span class="number">140</span>,<span class="number">803</span>  其余平均=<span class="number">17</span>,<span class="number">721</span></span><br><span class="line">GOP#<span class="number">2</span>  帧数=<span class="number">50</span>  字节=<span class="number">1</span>,<span class="number">119</span>,<span class="number">696</span>  首帧<span class="punctuation">(</span>I<span class="punctuation">)</span>=<span class="number">165</span>,<span class="number">931</span>  其余平均=<span class="number">19</span>,<span class="number">464</span></span><br><span class="line">GOP#<span class="number">3</span>  帧数=<span class="number">50</span>  字节=  <span class="number">932</span>,<span class="number">226</span>  首帧<span class="punctuation">(</span>I<span class="punctuation">)</span>=<span class="number">152</span>,<span class="number">399</span>  其余平均=<span class="number">15</span>,<span class="number">914</span></span><br><span class="line">GOP#<span class="number">4</span>  帧数=<span class="number">50</span>  字节=<span class="number">1</span>,<span class="number">076</span>,<span class="number">085</span>  首帧<span class="punctuation">(</span>I<span class="punctuation">)</span>=<span class="number">207</span>,<span class="number">326</span>  其余平均=<span class="number">17</span>,<span class="number">729</span></span><br><span class="line">...</span><br></pre></td></tr></table></figure>
+
+<p>每个 GOP 相差 20% 左右，取决于那两秒画面里有多少东西在动。这就是<strong>VBR 的本质</strong>：码率不是恒定的，它跟着画面内容走。</p>
+<h3 id="4-5-GOP-配大配小，到底在换什么"><a href="#4-5-GOP-配大配小，到底在换什么" class="headerlink" title="4.5 GOP 配大配小，到底在换什么"></a>4.5 GOP 配大配小，到底在换什么</h3><p>这是本节最重要的取舍：</p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>好处</th>
+<th>代价</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>GOP 小</strong>（比如 10 帧）</td>
+<td>首帧快、丢包后恢复快、拖动定位快</td>
+<td>码率虚高（I 帧多）、画质被摊薄</td>
+</tr>
+<tr>
+<td><strong>GOP 大</strong>（比如 250 帧）</td>
+<td>码率省、同等码率下画质更好</td>
+<td>首帧慢、丢一个包花屏很久、拖动定位慢</td>
+</tr>
+</tbody></table>
+<p>具体感受一下：</p>
+<ul>
+<li><strong>首帧等待</strong>：客户端连上来时，必须等到下一个 I 帧才能开始解码。GOP 250 帧 @ 30fps &#x3D; 8.3 秒，用户点开画面要盯着黑屏八秒。</li>
+<li><strong>丢包花屏</strong>：网络抖一下丢了个 P 帧，后面所有 P 帧都参考它，花屏会一直持续到下一个 I 帧才恢复。GOP 8 秒就是花屏 8 秒。</li>
+<li><strong>录像拖动</strong>：进度条拖到任意位置，播放器得往回找最近的 I 帧才能开始解。GOP 越长，拖动越”粘”。</li>
+</ul>
+<p><strong>推荐值：<code>GOP = 帧率 × 2</code></strong>，也就是大约 2 秒一个 I 帧。这是绝大多数场景的平衡点，也是本机子码流的配置（15×2 &#x3D; 30）。</p>
+<p>本机主码流配的是 <code>gop=50</code>，按配置的 25fps 算是 2 秒；但实际跑 30fps，所以真实间隔是 <code>50 ÷ 30 = 1.67 秒</code>。<strong>又一次，帧率没生效导致实际值偏离了设计意图。</strong></p>
+<h3 id="4-6-一个异常：GOP-被中途打断"><a href="#4-6-一个异常：GOP-被中途打断" class="headerlink" title="4.6 一个异常：GOP 被中途打断"></a>4.6 一个异常：GOP 被中途打断</h3><p>子码流那次抓包里，出现了一个只有 12 帧的 GOP：</p>
+<figure class="highlight erlang"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">I 帧位置: <span class="number">0</span>, <span class="number">30</span>, <span class="number">60</span>, <span class="number">90</span>, <span class="number">120</span>, <span class="number">132</span>, <span class="number">162</span>, <span class="number">192</span>, ...</span><br><span class="line">GOP 长度: <span class="number">30</span>, <span class="number">30</span>, <span class="number">30</span>, <span class="number">30</span>, <span class="number">12</span>, <span class="number">30</span>, <span class="number">30</span>, ...</span><br><span class="line">                              ↑ 这里断了</span><br></pre></td></tr></table></figure>
+
+<p>正常情况下 GOP 长度应该是恒定的 30。中间冒出个 12，说明<strong>在那一瞬间有人重新触发了编码器初始化</strong>——很可能是客户端断线重连，服务端重建了管线。</p>
+<p>这是个很实用的排查技巧：</p>
+<blockquote>
+<p><strong>GOP 长度不齐 → 说明有重连 &#x2F; 重启 &#x2F; 参数被重新下发。</strong></p>
+<p>一个稳定运行的码流，GOP 长度应该像心跳一样整齐。</p>
+</blockquote>
+<p>同理，抓包结尾那个只有 4 帧的 GOP，是我停掉抓包造成的，属于正常截断。</p>
+<h3 id="4-7-一句话记住"><a href="#4-7-一句话记住" class="headerlink" title="4.7 一句话记住"></a>4.7 一句话记住</h3><blockquote>
+<p><strong>GOP 是”画面质量”和”抗损伤能力”之间的交换。</strong></p>
+<p>调小换取鲁棒性，调大换取清晰度，中间那个平衡点通常是 2 秒。</p>
+</blockquote>
+<hr>
+<h2 id="第-5-章-码控模式：编码器怎么决定每帧花多少字节"><a href="#第-5-章-码控模式：编码器怎么决定每帧花多少字节" class="headerlink" title="第 5 章 码控模式：编码器怎么决定每帧花多少字节"></a>第 5 章 码控模式：编码器怎么决定每帧花多少字节</h2><p>同样配 4096 kbps，编码器可以有几种完全不同的花法。</p>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>全称</th>
+<th>怎么花</th>
+<th>适合</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>CBR</strong></td>
+<td>固定码率</td>
+<td>每秒固定额度，画质随内容起伏</td>
+<td>带宽受限、要稳定传输</td>
+</tr>
+<tr>
+<td><strong>VBR</strong></td>
+<td>可变码率</td>
+<td>简单的帧省着花，复杂的帧多给点</td>
+<td>本地存储、点播</td>
+</tr>
+<tr>
+<td><strong>CQP</strong></td>
+<td>固定质量</td>
+<td>不问码率，只固定画质档位</td>
+<td>追求画质一致，不管带宽</td>
+</tr>
+<tr>
+<td><strong>AVBR</strong></td>
+<td>自适应</td>
+<td>在 CBR 和 VBR 之间折中</td>
+<td>网络条件会变的场景</td>
+</tr>
+</tbody></table>
+<p>本机日志里明确写着：</p>
+<figure class="highlight stylus"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">mpp_enc: mode cbr bps <span class="selector-attr">[3840000:4096000:4352000]</span> fps fix <span class="selector-attr">[25/1]</span> gop <span class="selector-tag">i</span> <span class="selector-attr">[50]</span></span><br></pre></td></tr></table></figure>
+
+<p><code>mode cbr</code>，<code>[3840000:4096000:4352000]</code> 是允许的波动区间：目标 4096 kbps，允许在 3840 ~ 4352 kbps 之间浮动。</p>
+<p>CBR 的特点正好解释了前面那个现象：<strong>它保证每秒总量稳定，但保证不了每帧大小一致</strong>。所以 I 帧来的时候会吃掉一大块额度，接下来几十个 P 帧就得省着用。这就是为什么抓包里 I 帧 166 KB、P 帧只有 17 KB——总量是有预算的。</p>
+<p>这也解释了为什么”每帧预算 &#x3D; 码率 ÷ fps”这个算法虽然粗略，但实际相当准。</p>
+<hr>
+<h2 id="第-6-章-Profile-和-Level：解码器的能力证明"><a href="#第-6-章-Profile-和-Level：解码器的能力证明" class="headerlink" title="第 6 章 Profile 和 Level：解码器的能力证明"></a>第 6 章 Profile 和 Level：解码器的能力证明</h2><p>前端建立连接时，服务端会先发一条初始化消息：</p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="punctuation">&#123;</span><span class="attr">&quot;type&quot;</span><span class="punctuation">:</span><span class="string">&quot;init&quot;</span><span class="punctuation">,</span><span class="attr">&quot;codec&quot;</span><span class="punctuation">:</span><span class="string">&quot;avc1.640032&quot;</span><span class="punctuation">,</span><span class="attr">&quot;width&quot;</span><span class="punctuation">:</span><span class="number">2112</span><span class="punctuation">,</span><span class="attr">&quot;height&quot;</span><span class="punctuation">:</span><span class="number">1568</span><span class="punctuation">,</span><span class="attr">&quot;fps&quot;</span><span class="punctuation">:</span><span class="number">25</span><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
+
+<p><code>avc1.640032</code> 这一串不是随便起的，它决定了浏览器能不能解：</p>
+<figure class="highlight gherkin"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">avc1 . 64 . 00 . 32</span><br><span class="line">  |<span class="string">     </span>|<span class="string">    </span>|<span class="string">    </span>|</span><br><span class="line">  |<span class="string">     </span>|<span class="string">    </span>|<span class="string">    └─ Level：0x32 = 50 → Level 5.0</span></span><br><span class="line">  |<span class="string">     </span>|<span class="string">    └────── 约束标志</span></span><br><span class="line">  |<span class="string">     └─────────── Profile：0x64 = 100 → High Profile</span></span><br><span class="line">  └───────────────── 编码格式：H.264</span><br></pre></td></tr></table></figure>
+
+<table>
+<thead>
+<tr>
+<th>部分</th>
+<th>含义</th>
+<th>影响</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Profile</td>
+<td>用了哪些编码工具</td>
+<td>High 比 Baseline 压缩率高，但老设备可能不支持</td>
+</tr>
+<tr>
+<td>Level</td>
+<td>最大分辨率 × 帧率 × 码率</td>
+<td>超了浏览器直接拒绝解码</td>
+</tr>
+</tbody></table>
+<p>本机两个码流的 Profile&#x2F;Level 不一样：</p>
+<table>
+<thead>
+<tr>
+<th>码流</th>
+<th>codec 串</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>主</td>
+<td><code>avc1.640032</code></td>
+<td>High Profile, Level 5.0（2112×1568 需要更高的等级）</td>
+</tr>
+<tr>
+<td>子</td>
+<td><code>avc1.640028</code></td>
+<td>High Profile, Level 4.0（1280×720 用不了那么高）</td>
+</tr>
+</tbody></table>
+<p><strong>前端千万不要把这个字符串写死。</strong> 写死 <code>avc1.640028</code> 去接主码流，浏览器会认为”这个流我解不了”，直接黑屏，而且错误信息很模糊。</p>
+<p>正确做法是从初始化消息里读：</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">ws.<span class="property">onmessage</span> = <span class="function">(<span class="params">e</span>) =&gt;</span> &#123;</span><br><span class="line">  <span class="keyword">const</span> msg = <span class="title class_">JSON</span>.<span class="title function_">parse</span>(e.<span class="property">data</span>);</span><br><span class="line">  <span class="keyword">if</span> (msg.<span class="property">type</span> === <span class="string">&#x27;init&#x27;</span>) &#123;</span><br><span class="line">    <span class="comment">// 用服务端告诉你的 codec，不要自己猜</span></span><br><span class="line">    <span class="keyword">const</span> sb = mediaSource.<span class="title function_">addSourceBuffer</span>(<span class="string">`video/mp4; codecs=&quot;<span class="subst">$&#123;msg.codec&#125;</span>&quot;`</span>);</span><br><span class="line">  &#125;</span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+
+<hr>
+<h2 id="第-7-章-四个参数怎么一起定"><a href="#第-7-章-四个参数怎么一起定" class="headerlink" title="第 7 章 四个参数怎么一起定"></a>第 7 章 四个参数怎么一起定</h2><h3 id="7-1-先定分辨率，再定帧率，最后算码率"><a href="#7-1-先定分辨率，再定帧率，最后算码率" class="headerlink" title="7.1 先定分辨率，再定帧率，最后算码率"></a>7.1 先定分辨率，再定帧率，最后算码率</h3><p>顺序不能反。因为分辨率和帧率是”需求”（要多清楚、要多流畅），码率是”代价”。</p>
+<h3 id="7-2-经验值表"><a href="#7-2-经验值表" class="headerlink" title="7.2 经验值表"></a>7.2 经验值表</h3><p>按 bpp 0.05 ~ 0.10 反推出来的参考配置：</p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>分辨率</th>
+<th>帧率</th>
+<th>码率</th>
+<th>bpp</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>手机预览</td>
+<td>640×360</td>
+<td>15</td>
+<td>400 kbps</td>
+<td>0.116</td>
+</tr>
+<tr>
+<td>标清子码流</td>
+<td>1280×720</td>
+<td>25</td>
+<td>1.5 Mbps</td>
+<td>0.065</td>
+</tr>
+<tr>
+<td>高清主码流</td>
+<td>1920×1080</td>
+<td>25</td>
+<td>4 Mbps</td>
+<td>0.077</td>
+</tr>
+<tr>
+<td>4K 主码流</td>
+<td>3840×2160</td>
+<td>25</td>
+<td>16 Mbps</td>
+<td>0.077</td>
+</tr>
+<tr>
+<td>车牌识别</td>
+<td>1920×1080</td>
+<td>25</td>
+<td>8 Mbps</td>
+<td>0.154</td>
+</tr>
+</tbody></table>
+<p>注意 1080p 和 4K 的 bpp 一样，码率却是 4 倍——因为像素数是 4 倍。<strong>这就是为什么 4K 千万别照抄 1080p 的码率。</strong></p>
+<h3 id="7-3-校验清单"><a href="#7-3-校验清单" class="headerlink" title="7.3 校验清单"></a>7.3 校验清单</h3><p>配完之后按这个顺序验：</p>
+<ol>
+<li><strong>实际分辨率对不对</strong> —— <code>v4l2-ctl --get-fmt-video</code>，回读值和请求值是否一致</li>
+<li><strong>实际帧率对不对</strong> —— 抓 10 秒数帧数，别信配置</li>
+<li><strong>实际码率对不对</strong> —— 抓包算字节数</li>
+<li><strong>bpp 落在 0.05 ~ 0.10 吗</strong> —— 不在就调整</li>
+<li><strong>GOP 长度整齐吗</strong> —— 不整齐说明有重连或重启</li>
+</ol>
+<hr>
+<h2 id="第-8-章-本机实测全景"><a href="#第-8-章-本机实测全景" class="headerlink" title="第 8 章 本机实测全景"></a>第 8 章 本机实测全景</h2><p>一句话总结这台设备的四个码流参数：</p>
+<figure class="highlight tap"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line">配置（库里 tki_video_stream）</span><br><span class="line">  主  2112×1568  <span class="number"> 25 </span>fps  <span class="number"> 4096 </span>kbps   GOP 50</span><br><span class="line">  子  1280×720   <span class="number"> 15 </span>fps  <span class="number"> 1024 </span>kbps   GOP 30</span><br><span class="line"></span><br><span class="line">编码器实际收到的（MPP 日志）</span><br><span class="line">  主  bps<span class="number"> 4096000 </span> fps [25:25]  gop 50</span><br><span class="line">  子  bps<span class="number"> 1024000 </span> fps [15:15]  gop 30</span><br><span class="line"></span><br><span class="line">实测（抓<span class="number"> 12 </span>秒）</span><br><span class="line">  主  30.0 fps  <span class="number"> 5060 </span>kbps  <span class="number"> 360 </span>帧(解析 354)   I:8  P:346   I/P = 9.6:1</span><br><span class="line">  子  29.8 fps  <span class="number"> 1967 </span>kbps  <span class="number"> 358 </span>帧(解析 340)   I:12 P:328   I/P = 14.3:1</span><br></pre></td></tr></table></figure>
+
+<p><strong>唯一对不上的就是帧率</strong>：配置 25&#x2F;15，实际 30&#x2F;29.8。采集节点没按 caps 限速。</p>
+<p>这个偏差带来的连锁效应：</p>
+<figure class="highlight erlang-repl"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">帧率多 <span class="number">20</span><span class="comment">%  →  码率也多 20%  →  bpp 基本不变（每帧质量没变）</span></span><br><span class="line">                  ↓</span><br><span class="line">           带宽超出预期 <span class="number">20</span><span class="comment">%</span></span><br></pre></td></tr></table></figure>
+
+<p>好在 bpp 是稳的，说明画质没有被牺牲。如果要让配置和实际一致，把库里的 fps 改成 30 即可。</p>
+<hr>
+<h2 id="第-9-章-五个坑"><a href="#第-9-章-五个坑" class="headerlink" title="第 9 章 五个坑"></a>第 9 章 五个坑</h2><h3 id="坑-1：kbps-当-KB-s-用"><a href="#坑-1：kbps-当-KB-s-用" class="headerlink" title="坑 1：kbps 当 KB&#x2F;s 用"></a>坑 1：kbps 当 KB&#x2F;s 用</h3><p>差 8 倍。有人算出”4Mbps 的摄像头一天存 43GB”，其实是 <code>4 Mbps × 86400 秒 ÷ 8 = 43.2 GB</code>——如果忘了 ÷8，就会算成 345GB。<strong>先定清楚是 bit 还是 Byte。</strong></p>
+<h3 id="坑-2：以为配了帧率就生效"><a href="#坑-2：以为配了帧率就生效" class="headerlink" title="坑 2：以为配了帧率就生效"></a>坑 2：以为配了帧率就生效</h3><p>本机就是反例。配置、日志、caps 三层都写 25，实际跑 30。<strong>帧率必须实测</strong>，方法是抓 10 秒数帧数。</p>
+<h3 id="坑-3：以为码率越高越清晰"><a href="#坑-3：以为码率越高越清晰" class="headerlink" title="坑 3：以为码率越高越清晰"></a>坑 3：以为码率越高越清晰</h3><p>分辨率固定时，信息量就那么多。1080p 配 40 Mbps 不会比 8 Mbps 更清楚，只是浪费带宽和存储。反过来，<strong>码率配太低会让画面直接崩坏</strong>——不是慢慢变模糊，而是整片变成方块。</p>
+<h3 id="坑-4：分辨率改了但几何变形"><a href="#坑-4：分辨率改了但几何变形" class="headerlink" title="坑 4：分辨率改了但几何变形"></a>坑 4：分辨率改了但几何变形</h3><p>驱动会接受任何你给的宽高，不检查宽高比。1920×1080 请求在 4:3 的 sensor 上能”成功”，画面却是拉长的。<strong>必须靠肉眼核对</strong>。</p>
+<h3 id="坑-5：GOP-配了但没算帧率"><a href="#坑-5：GOP-配了但没算帧率" class="headerlink" title="坑 5：GOP 配了但没算帧率"></a>坑 5：GOP 配了但没算帧率</h3><p><code>gop=50</code> 到底是 2 秒还是 1.67 秒，取决于实际帧率。如果帧率没生效，你设计的”2 秒一个关键帧”就变成了 1.67 秒。<strong>GOP 用帧数表达，时长要自己换算。</strong></p>
+<hr>
+<h2 id="第-10-章-速查卡"><a href="#第-10-章-速查卡" class="headerlink" title="第 10 章 速查卡"></a>第 10 章 速查卡</h2><figure class="highlight gml"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line">【分辨率】宽 × 高，决定细节上限，不能改宽高比</span><br><span class="line">【帧率】<span class="variable language_">fps</span>，决定流畅度和曝光时间上限（<span class="number">1</span>/<span class="variable language_">fps</span>）</span><br><span class="line">【码率】bit/s，是分辨率×帧率被压缩后的结果</span><br><span class="line">【GOP】帧数，两个 I 帧之间的距离，推荐 <span class="variable language_">fps</span>×<span class="number">2</span></span><br><span class="line"></span><br><span class="line">未压缩带宽 = 宽 × 高 × <span class="number">1.5</span> × <span class="variable language_">fps</span> × <span class="number">8</span>   (bit/s)</span><br><span class="line">单帧字节   = 码率 ÷ <span class="number">8</span> ÷ <span class="variable language_">fps</span></span><br><span class="line">码率合理性 = 码率 ÷ (宽 × 高 × <span class="variable language_">fps</span>)     → <span class="number">0.05</span> ~ <span class="number">0.10</span></span><br><span class="line"></span><br><span class="line">单位换算   <span class="number">1</span> B = <span class="number">8</span> bit    KB/s × <span class="number">8</span> = kbps</span><br><span class="line">码率偏差   实测 ÷ 配置 ≈ 实际帧率 ÷ 配置帧率</span><br><span class="line">GOP 时长   GOP 帧数 ÷ 实际帧率</span><br></pre></td></tr></table></figure>
+
+<hr>
+<h2 id="附：本文所有实测数据的采集方法"><a href="#附：本文所有实测数据的采集方法" class="headerlink" title="附：本文所有实测数据的采集方法"></a>附：本文所有实测数据的采集方法</h2><table>
+<thead>
+<tr>
+<th>数据</th>
+<th>命令</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>当前分辨率 &#x2F; 格式</td>
+<td><code>v4l2-ctl -d /dev/video23 --get-fmt-video</code></td>
+</tr>
+<tr>
+<td>当前帧率（ISP 常不实现）</td>
+<td><code>v4l2-ctl -d /dev/video23 --get-parm</code></td>
+</tr>
+<tr>
+<td>编码器实际收到的参数</td>
+<td>查服务日志里的 <code>MPP_ENC_SET_RC_CFG</code></td>
+</tr>
+<tr>
+<td>实际码率、帧率</td>
+<td>抓 10 秒流，字节数 ÷ 时长</td>
+</tr>
+<tr>
+<td>帧结构、GOP</td>
+<td><code>ffprobe -show_frames -show_entries frame=pict_type,pkt_size</code></td>
+</tr>
+<tr>
+<td>编码器落盘产物</td>
+<td><code>gst-launch-1.0 ... ! filesink location=x.h264</code></td>
+</tr>
+</tbody></table>
+<p>抓包统计帧结构的那段脚本：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">ffprobe -v error -select_streams v:0 -show_frames \</span><br><span class="line">  -show_entries frame=pict_type,pkt_size,key_frame \</span><br><span class="line">  -of csv=p=0 stream.h264</span><br></pre></td></tr></table></figure>
+
+<p>输出每行是 <code>key_frame,pkt_size,pict_type</code>，比如：</p>
+<figure class="highlight apache"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="attribute">1</span>,<span class="number">140803</span>,I     ← 关键帧，<span class="number">140803</span> 字节</span><br><span class="line"><span class="attribute">0</span>,<span class="number">17909</span>,P      ← 非关键帧，<span class="number">17909</span> 字节</span><br></pre></td></tr></table></figure>
+
+<p>把 I 帧的位置列出来，相邻两个位置相减，就是 GOP 长度。</p>
+<hr>
+<h2 id="收尾"><a href="#收尾" class="headerlink" title="收尾"></a>收尾</h2><p>如果只能记三句话：</p>
+<ol>
+<li><strong>分辨率 × 帧率决定原始数据量，码率是压缩后的结果。</strong></li>
+<li><strong>帧率决定曝光时间上限，不只是流畅度。</strong></li>
+<li><strong>GOP 在画质和抗损伤之间做交换，推荐 2 秒一个 I 帧。</strong></li>
+</ol>
+<p>其余所有参数——码控模式、Profile、Level、B 帧、参考帧数——都是在这三句话上做微调。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%B5%81%E5%AA%92%E4%BD%93%E5%9B%9B%E5%8F%82%E6%95%B0-%E5%88%86%E8%BE%A8%E7%8E%87%E5%B8%A7%E7%8E%87%E7%A0%81%E7%8E%87GOP%E8%AE%B2%E6%B8%85%E6%A5%9A/" data-id="cuidFHgmNkj36mmXAePepuJGt" data-title="分辨率、帧率、码率、GOP：视频参数一次讲明白" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/H-264/" rel="tag">H.264</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" rel="tag">新人向</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" rel="tag">流媒体</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" rel="tag">视频编码</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+  
+    <a href="/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">后一篇</strong>
+      <div class="article-nav-title">从零搭一套 Hexo + GitHub Pages 博客，并做到一条命令发布</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%AE%9E%E6%88%98%E9%A1%B9%E7%9B%AE/">实战项目</a></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/">技术笔记</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签</h3>
+    <div class="widget">
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/GitHub-Pages/" rel="tag">GitHub Pages</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/H-264/" rel="tag">H.264</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Hexo/" rel="tag">Hexo</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/V4L2/" rel="tag">V4L2</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/WebSocket/" rel="tag">WebSocket</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%8D%9A%E5%AE%A2/" rel="tag">博客</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" rel="tag">摄像头</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" rel="tag">新人向</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" rel="tag">流媒体</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" rel="tag">视频编码</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" rel="tag">视频链路</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/GStreamer/" style="font-size: 20px;">GStreamer</a> <a href="/tags/GitHub-Pages/" style="font-size: 10px;">GitHub Pages</a> <a href="/tags/H-264/" style="font-size: 10px;">H.264</a> <a href="/tags/Hexo/" style="font-size: 10px;">Hexo</a> <a href="/tags/ISP/" style="font-size: 10px;">ISP</a> <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/RV1126B/" style="font-size: 10px;">RV1126B</a> <a href="/tags/V4L2/" style="font-size: 15px;">V4L2</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/%E5%8D%9A%E5%AE%A2/" style="font-size: 10px;">博客</a> <a href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" style="font-size: 15px;">嵌入式</a> <a href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" style="font-size: 10px;">摄像头</a> <a href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" style="font-size: 20px;">新人向</a> <a href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" style="font-size: 10px;">流媒体</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" style="font-size: 10px;">视频编码</a> <a href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" style="font-size: 10px;">视频链路</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 15px;">调试复盘</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/11/">十一月 2026</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">最新文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2026/11/07/2026-11-07-%E6%B5%81%E5%AA%92%E4%BD%93%E5%9B%9B%E5%8F%82%E6%95%B0-%E5%88%86%E8%BE%A8%E7%8E%87%E5%B8%A7%E7%8E%87%E7%A0%81%E7%8E%87GOP%E8%AE%B2%E6%B8%85%E6%A5%9A/">分辨率、帧率、码率、GOP：视频参数一次讲明白</a>
+          </li>
+        
+          <li>
+            <a href="/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/">从零搭一套 Hexo + GitHub Pages 博客，并做到一条命令发布</a>
+          </li>
+        
+          <li>
+            <a href="/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/">搞不清 V4L2、GStreamer、appsink？一篇讲透</a>
+          </li>
+        
+          <li>
+            <a href="/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/">摄像头开发入门：从一台陌生设备，到浏览器里出画面</a>
+          </li>
+        
+          <li>
+            <a href="/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/">从摄像头到网页：一次完整的视频链路拆解</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      
+      &copy; 2026 老崔<br>
+      Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+
+<script src="/js/jquery-3.6.4.min.js"></script>
+
+
+
+  
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+<script src="/js/script.js"></script>
+
+
+
+
+
+  </div>
+</body>
+</html>
