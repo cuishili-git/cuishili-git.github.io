@@ -77,6 +77,455 @@
       <div class="outer">
         <section id="main">
   
+    <article id="post-2026-11-07-ISP图像参数调整-从rkaiq接管到前端调色" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2026/11/07/2026-11-07-ISP%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0%E8%B0%83%E6%95%B4-%E4%BB%8Erkaiq%E6%8E%A5%E7%AE%A1%E5%88%B0%E5%89%8D%E7%AB%AF%E8%B0%83%E8%89%B2/" class="article-date">
+  <time class="dt-published" datetime="2026-11-07T07:20:27.000Z" itemprop="datePublished">2026-11-07</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/%E5%AE%9E%E6%88%98%E9%A1%B9%E7%9B%AE/">实战项目</a>
+  </div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 itemprop="name">
+      <a class="p-name article-title" href="/2026/11/07/2026-11-07-ISP%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0%E8%B0%83%E6%95%B4-%E4%BB%8Erkaiq%E6%8E%A5%E7%AE%A1%E5%88%B0%E5%89%8D%E7%AB%AF%E8%B0%83%E8%89%B2/">ISP 图像参数调整：从 rkaiq 接管到前端调色</a>
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <blockquote>
+<p>试验平台：Forlinx OK1126B-S &#x2F; RV1126B 四核 Cortex-A53 &#x2F; 内核 6.1.141 &#x2F; OV13855 MIPI 摄像头<br>日期：2026-11-07</p>
+</blockquote>
+<h2 id="背景：为什么要做这件事"><a href="#背景：为什么要做这件事" class="headerlink" title="背景：为什么要做这件事"></a>背景：为什么要做这件事</h2><p>板子上的 MIPI 摄像头（OV13855）推流到前端，画面一直偏蓝。想加亮度、对比度、饱和度、色调四个参数的调节能力，让用户在前端拉滑杆就能调。</p>
+<p>听起来很简单——不就是改几个参数嘛。但实际做下来，从方案探索到最终落地，踩了一串坑，推翻了好几次自己的判断。这篇文章把完整过程记下来，希望后来人少走弯路。</p>
+<h2 id="第一步：搞清楚能在哪里调"><a href="#第一步：搞清楚能在哪里调" class="headerlink" title="第一步：搞清楚能在哪里调"></a>第一步：搞清楚能在哪里调</h2><p>一块板子从 sensor 到前端，数据要经过好几道关卡。能调色彩的位置不止一个，但每个位置的代价和效果完全不同。</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>调在哪</th>
+<th>四参数</th>
+<th>代价</th>
+<th>进码流</th>
+<th>落地难度</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>rkaiq UAPI2</td>
+<td>ISP 内部</td>
+<td>全支持</td>
+<td>零（硬件）</td>
+<td>是</td>
+<td>高</td>
+</tr>
+<tr>
+<td>IQ json 静态</td>
+<td>ISP 内部</td>
+<td>全支持</td>
+<td>零</td>
+<td>是</td>
+<td>低，但只能重启生效</td>
+</tr>
+<tr>
+<td>GStreamer videobalance</td>
+<td>编码前 NV12</td>
+<td>全支持</td>
+<td>主码流 28.5ms&#x2F;帧</td>
+<td>是</td>
+<td>低，一行插件</td>
+</tr>
+<tr>
+<td>CSS filter</td>
+<td>前端浏览器</td>
+<td>全支持</td>
+<td>零（客户端算）</td>
+<td>否</td>
+<td>极低</td>
+</tr>
+<tr>
+<td>RGA 硬件</td>
+<td>编码前</td>
+<td>只有色彩空间转换</td>
+<td>硬件</td>
+<td>是</td>
+<td>做不了这 4 个参数</td>
+</tr>
+</tbody></table>
+<p>先说几个容易误判的点：</p>
+<p><strong>v4l2-ctl 走不通</strong>。在板上执行 <code>v4l2-ctl -l -d /dev/video23</code>，ISP 节点只有 <code>pixel_rate</code> 一个控制项，没有 brightness&#x2F;contrast&#x2F;saturation&#x2F;hue。RK 平台的这些色彩处理全在 rkaiq 里，V4L2 接口不暴露。sensor 的 subdev 只有 exposure、analogue_gain、test_pattern，也没有色彩参数。</p>
+<p><strong>RGA 做不了</strong>。<code>librga.so</code> 只导出 <code>imcvtcolor</code>&#x2F;<code>improcess</code>，这是 BT.601↔709、full↔limited range 这类色彩空间转换，没有独立的亮度&#x2F;对比度&#x2F;饱和度&#x2F;色调接口。指望它来调色是常见的误解。</p>
+<p><strong>videobalance 太吃 CPU</strong>。在四核 A53 上实测，2112×1568 主码流每帧要 28.5ms CPU，28fps 下单核占用约 80%，会掉约 19% 帧率。子码流 720p 只需 8ms，可以用。</p>
+<p>所以最终目标是走 <strong>rkaiq UAPI2</strong>——零开销、进码流、全平台生效。但这条路最复杂。</p>
+<h2 id="第二步：librkaiq-控制的是谁"><a href="#第二步：librkaiq-控制的是谁" class="headerlink" title="第二步：librkaiq 控制的是谁"></a>第二步：librkaiq 控制的是谁</h2><p><code>librkaiq.so</code> 是用户态库，同时控制 ISP 和 sensor，但分工很清楚：</p>
+<p><strong>ISP 侧</strong>：AE、AWB、CCM、Gamma、CGC、HSV 等算法计算出的结果，组合成结构化参数块，通过 <code>rkisp-input-params</code> 视频节点用私有 ioctl 下发给内核 rkisp 驱动，由驱动转成 ISP 硬件寄存器。亮度、对比度、饱和度、色调全走这条路径。</p>
+<p><strong>sensor 侧</strong>：只有曝光和增益。通过 subdev 的标准 V4L2 ioctl 写 <code>V4L2_CID_EXPOSURE</code> 和 <code>V4L2_CID_ANALOGUE_GAIN</code>，由 ov13855 驱动转成 I2C 寄存器写。</p>
+<p>四参数 API 的签名（在 <code>rk_aiq_user_api2_imgproc.h</code> 里）：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">XCamReturn <span class="title function_">rk_aiq_uapi2_setBrightness</span><span class="params">(<span class="type">const</span> <span class="type">rk_aiq_sys_ctx_t</span>* ctx, <span class="type">unsigned</span> <span class="type">int</span> level)</span>;</span><br><span class="line">XCamReturn <span class="title function_">rk_aiq_uapi2_setContrast</span><span class="params">(<span class="type">const</span> <span class="type">rk_aiq_sys_ctx_t</span>* ctx, <span class="type">unsigned</span> <span class="type">int</span> level)</span>;</span><br><span class="line">XCamReturn <span class="title function_">rk_aiq_uapi2_setSaturation</span><span class="params">(<span class="type">const</span> <span class="type">rk_aiq_sys_ctx_t</span>* ctx, <span class="type">unsigned</span> <span class="type">int</span> level)</span>;</span><br><span class="line">XCamReturn <span class="title function_">rk_aiq_uapi2_setHue</span><span class="params">(<span class="type">const</span> <span class="type">rk_aiq_sys_ctx_t</span>* ctx, <span class="type">unsigned</span> <span class="type">int</span> level)</span>;</span><br></pre></td></tr></table></figure>
+
+<p><code>level</code> 是 <strong>unsigned int，范围 [0, 255]</strong>，不是 float，也不是 0~1 的归一化值。</p>
+<p>关于对焦：OV13855(CMK-OT2016-FV1) 是<strong>定焦模组</strong>，不带 VCM 马达。subdev 没有 <code>focus_absolute</code>，设备树里搜不到 <code>lens-focus</code>，dmesg 里也没有 vcm 驱动。IQ json 里的 <code>af_calib</code>&#x2F;<code>vcm</code> 只是模板字段。所以对焦只能手动拧镜头。</p>
+<h2 id="第三步：踩坑——以为能当-client"><a href="#第三步：踩坑——以为能当-client" class="headerlink" title="第三步：踩坑——以为能当 client"></a>第三步：踩坑——以为能当 client</h2><p>一开始我在 <code>librkaiq.so</code> 的符号表里发现了 <code>/tmp/UNIX.domain</code> 这样的 unix socket 路径，还有 <code>bind failed, reason: Address already in use</code> 这样的错误串。于是判断：librkaiq 内置了 server&#x2F;client 模式——第一个调 init 的进程当 server 绑定 socket，后来的进程当 client，通过 socket 转发请求。</p>
+<p><strong>这个判断是错的。</strong></p>
+<p>去读源码（<code>rkaiq/ipc/socket_client.c:19</code>），发现一行：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">#<span class="keyword">define</span> USE_IPC_SERVER</span></span><br></pre></td></tr></table></figure>
+
+<p>这个宏定义着，于是 <code>ClientThreadFunc</code> 走的是 <strong>try_accept</strong> 分支——每个调用 init 的进程都会执行 <code>unlink + bind + listen</code> 同一个 socket，<strong>没有”发现已有 server 就当 client”的降级路径</strong>。而 <code>AiqManager_init</code> 是无条件执行的，一定会抢 ISP 的 params&#x2F;stats 节点。</p>
+<p>实测验证：3A server 活着时，forlinx 用户去跑 init → 无法 unlink root 的 socket → bind 失败 → <strong>段错误</strong>。</p>
+<h2 id="第四步：三条硬约束"><a href="#第四步：三条硬约束" class="headerlink" title="第四步：三条硬约束"></a>第四步：三条硬约束</h2><p>撞了几次墙后，总结出三条绕不开的约束：</p>
+<table>
+<thead>
+<tr>
+<th>约束</th>
+<th>现象</th>
+<th>证据</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>必须停 rkaiq_3A_server</td>
+<td>不停就段错误</td>
+<td>3A 在跑时 init → Segmentation fault</td>
+</tr>
+<tr>
+<td>必须以 root 运行</td>
+<td>非 root 能出流但 AE 不工作</td>
+<td><code>Thread(isp_3a_stats_poll) create fail</code> → 画面全暗</td>
+</tr>
+<tr>
+<td>接管后必须重启推流服务</td>
+<td>3A 不 attach，画面全黑</td>
+<td>3A 需要 stream-on 事件才接管；AE 收敛要约 25 秒</td>
+</tr>
+</tbody></table>
+<p>第二条特别坑：非 root 用户（forlinx）能 init 出 ctx，能出流，但 AE 统计线程创建失败，导致画面全暗（Yavg&#x3D;54）。必须 root 跑才正常。</p>
+<p><strong>一个低级错误要记一下</strong>：busybox 的 <code>ps</code> 不带参数只显示当前用户的进程。板上的 rkaiq_3A_server 是以 root 启动的，用 <code>ps</code> 看到的是 0 个，以为它没起来，反复 killall + 重启板子，把状态搞得一团乱。<strong>查 root 服务必须用 <code>ps -ef</code> 或 <code>ps aux</code>。</strong></p>
+<h2 id="第五步：四参数确实生效"><a href="#第五步：四参数确实生效" class="headerlink" title="第五步：四参数确实生效"></a>第五步：四参数确实生效</h2><p>用 root 停掉 3A、启动自己的验证程序（aiq_live），调参数后抓流用 ffprobe signalstats 算客观指标：</p>
+<table>
+<thead>
+<tr>
+<th>状态</th>
+<th>Yavg</th>
+<th>U 偏离</th>
+<th>V 偏离</th>
+<th>码率</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>3A 正常基线</td>
+<td>126.6</td>
+<td>+37.3</td>
+<td>-32.5</td>
+<td>4548</td>
+</tr>
+<tr>
+<td>接管后默认</td>
+<td>118.4</td>
+<td>+45.6</td>
+<td>-44.6</td>
+<td>4541</td>
+</tr>
+<tr>
+<td>setBrightness&#x3D;200</td>
+<td><strong>190.3</strong></td>
+<td>+48.1</td>
+<td>-53.7</td>
+<td>4863</td>
+</tr>
+<tr>
+<td>setSaturation&#x3D;240</td>
+<td>118.0</td>
+<td>+48.5</td>
+<td>-55.2</td>
+<td>4720</td>
+</tr>
+</tbody></table>
+<p>亮度从 118 涨到 190（+72），饱和度让 U&#x2F;V 偏离同步放大。接口真实有效。</p>
+<p><strong>饱和度标定曲线</strong>（白天实测，U&#x2F;V 偏离值）：</p>
+<table>
+<thead>
+<tr>
+<th>saturation</th>
+<th>U 偏离</th>
+<th>V 偏离</th>
+<th>效果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>0</td>
+<td>0.00</td>
+<td>0.00</td>
+<td>纯黑白灰度</td>
+</tr>
+<tr>
+<td>32</td>
+<td>+8.4</td>
+<td>-8.5</td>
+<td>几乎无色</td>
+</tr>
+<tr>
+<td>64</td>
+<td>+16.6</td>
+<td>-17.4</td>
+<td>淡色</td>
+</tr>
+<tr>
+<td>96</td>
+<td>+25.5</td>
+<td>-26.8</td>
+<td>正常</td>
+</tr>
+<tr>
+<td>128</td>
+<td>+31.7</td>
+<td>-33.4</td>
+<td>标准</td>
+</tr>
+<tr>
+<td>192</td>
+<td>+38.0</td>
+<td>-42.9</td>
+<td>浓艳</td>
+</tr>
+</tbody></table>
+<p>s&#x3D;0 时 U&#x2F;V 恰好等于 128.00，完全灰度，证实 level 直接控制饱和度。</p>
+<p><strong>brightness&#x3D;255 会黑屏</strong>：这是一个必须捂住的坑。255 把画面打成全黑（Yavg&#x3D;16），254 完全正常（Yavg&#x3D;193.7）。原因是 uint8 溢出。其他三个参数（contrast&#x2F;saturation&#x2F;hue）的 255 都正常。</p>
+<h2 id="第六步：架构设计"><a href="#第六步：架构设计" class="headerlink" title="第六步：架构设计"></a>第六步：架构设计</h2><p>既然”必须 root + 独占 ISP”绕不开，把 librkaiq 直接链进 device_platform 意味着整个业务服务要 root 运行，安全风险太大。所以选择<strong>独立守护进程</strong>方案：</p>
+<figure class="highlight dns"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">前端 PUT /api/video-images/:id  <span class="punctuation">(</span><span class="number">0</span>~<span class="number">100</span>，<span class="number">50</span> 中性<span class="punctuation">)</span></span><br><span class="line">   ↓</span><br><span class="line">device_platform <span class="punctuation">(</span>forlinx<span class="punctuation">)</span>：存库 + 转发（映射到 <span class="number">0</span>~<span class="number">254</span>，<span class="number">127</span> 中性）</span><br><span class="line">   ↓  unix socket /tmp/aiq_paramd.sock</span><br><span class="line">aiq_paramd <span class="punctuation">(</span>root<span class="punctuation">)</span>：独占 rkaiq，当 ISP <span class="number">3</span><span class="keyword">A</span> 主体</span><br><span class="line">   ↓  ISP 硬件 → 进码流</span><br><span class="line">全平台生效</span><br></pre></td></tr></table></figure>
+
+<p>拆成两个进程的好处：</p>
+<ul>
+<li><strong>权限隔离</strong>：device_platform 跑在 forlinx 用户，只有 paramd 需要 root</li>
+<li><strong>故障隔离</strong>：paramd 崩了可独立重启，不牵连前端；device_platform 重启不影响 ISP</li>
+<li><strong>未来扩展</strong>：要加锐化&#x2F;降噪&#x2F;伽马，只改 paramd</li>
+</ul>
+<h2 id="第七步：编写-aiq-paramd"><a href="#第七步：编写-aiq-paramd" class="headerlink" title="第七步：编写 aiq_paramd"></a>第七步：编写 aiq_paramd</h2><p><code>aiq_paramd.c</code> 是一个单文件 C 程序，不需要 Makefile，一条 gcc 命令编译。</p>
+<p>核心逻辑：</p>
+<ol>
+<li>初始化 rkaiq（<code>sysctl_init</code> → <code>sysctl_prepare</code> → <code>sysctl_start</code>），拿到 ISP 上下文</li>
+<li>创建 unix socket <code>/tmp/aiq_paramd.sock</code>，chmod 666（让 forlinx 用户也能连）</li>
+<li>poll 循环等待客户端连接，收到 <code>SET b c s h</code> 就调四个 API，收到 <code>GET</code> 就回读当前值</li>
+<li>SIGTERM 时干净 deinit（stop → deinit → unlink socket）</li>
+</ol>
+<p><strong>brightness clamp 到 254</strong>：收到 255 自动降为 254，防止黑屏。</p>
+<p>编译（在虚拟机上）：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">CC=/home/elf/forlinx/cross-chain/aarch64-buildroot-linux-gnu_sdk-buildroot/bin/aarch64-buildroot-linux-gnu-gcc</span><br><span class="line">SYS=/home/elf/forlinx/cross-chain/aarch64-buildroot-linux-gnu_sdk-buildroot/aarch64-buildroot-linux-gnu/sysroot</span><br><span class="line"></span><br><span class="line"><span class="variable">$CC</span> -O2 -Wall -Wextra -o aiq_paramd aiq_paramd.c \</span><br><span class="line">  --sysroot=<span class="variable">$SYS</span> \</span><br><span class="line">  -I<span class="variable">$SYS</span>/usr/include/rkaiq/uAPI2 \</span><br><span class="line">  -I<span class="variable">$SYS</span>/usr/include/rkaiq/common \</span><br><span class="line">  -I<span class="variable">$SYS</span>/usr/include/raiq \</span><br><span class="line">  -L<span class="variable">$SYS</span>/usr/lib -lrkaiq -lpthread -ldl -lm</span><br></pre></td></tr></table></figure>
+
+<p>为什么单文件不用 Makefile：一个 <code>.c</code> 编译成一个可执行文件，一条 gcc 命令就是最干净的构建系统。多文件项目（比如 device_platform 后端用 CMake 管理 20+ 个头文件）才需要 Makefile&#x2F;CMake。</p>
+<p>参数解释：</p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>--sysroot</code></td>
+<td>指定 SDK 系统头文件和库的根目录</td>
+</tr>
+<tr>
+<td><code>-I.../rkaiq/uAPI2</code></td>
+<td>rkaiq 用户 API 头文件路径</td>
+</tr>
+<tr>
+<td><code>-L -lrkaiq</code></td>
+<td>链接 librkaiq.so</td>
+</tr>
+<tr>
+<td><code>-lpthread -ldl -lm</code></td>
+<td>rkaiq 内部依赖的线程&#x2F;动态加载&#x2F;数学库</td>
+</tr>
+</tbody></table>
+<h2 id="第八步：device-platform-与-paramd-的交互"><a href="#第八步：device-platform-与-paramd-的交互" class="headerlink" title="第八步：device_platform 与 paramd 的交互"></a>第八步：device_platform 与 paramd 的交互</h2><p>device_platform 侧加了一个 <code>aiq_client.hpp</code>，核心就三个函数：</p>
+<p><strong>socket 收发</strong>：每次命令都是短连接——连上、发、收、关。</p>
+<figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">inline</span> <span class="type">bool</span> <span class="title">send_cmd</span><span class="params">(<span class="type">const</span> <span class="type">char</span>* cmd, <span class="type">char</span>* reply, <span class="type">size_t</span> rlen)</span> </span>&#123;</span><br><span class="line">    <span class="type">int</span> fd = <span class="built_in">socket</span>(AF_UNIX, SOCK_STREAM, <span class="number">0</span>);</span><br><span class="line">    sockaddr_un addr;</span><br><span class="line">    addr.sun_family = AF_LOCAL;</span><br><span class="line">    <span class="built_in">snprintf</span>(addr.sun_path, <span class="keyword">sizeof</span>(addr.sun_path), <span class="string">&quot;/tmp/aiq_paramd.sock&quot;</span>);</span><br><span class="line">    <span class="keyword">if</span> (<span class="built_in">connect</span>(fd, (sockaddr*)&amp;addr, <span class="keyword">sizeof</span>(addr)) &lt; <span class="number">0</span>) &#123;</span><br><span class="line">        <span class="built_in">close</span>(fd); <span class="keyword">return</span> <span class="literal">false</span>;   <span class="comment">// paramd 不在线</span></span><br><span class="line">    &#125;</span><br><span class="line">    <span class="built_in">write</span>(fd, cmd, <span class="built_in">strlen</span>(cmd));</span><br><span class="line">    <span class="type">ssize_t</span> m = <span class="built_in">read</span>(fd, reply, rlen - <span class="number">1</span>);</span><br><span class="line">    <span class="keyword">if</span> (m &gt; <span class="number">0</span>) reply[m] = <span class="string">&#x27;\0&#x27;</span>;</span><br><span class="line">    <span class="built_in">close</span>(fd);</span><br><span class="line">    <span class="keyword">return</span> m &gt; <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p><strong>值映射</strong>：库表和前端用 0<del>100（50 中性），paramd 用 0</del>254（127 中性）。</p>
+<figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">inline</span> <span class="type">int</span> <span class="title">level100_to_255</span><span class="params">(<span class="type">long</span> <span class="type">long</span> v)</span> </span>&#123;</span><br><span class="line">    <span class="keyword">if</span> (v &lt; <span class="number">0</span>)   v = <span class="number">0</span>;</span><br><span class="line">    <span class="keyword">if</span> (v &gt; <span class="number">100</span>) v = <span class="number">100</span>;</span><br><span class="line">    <span class="keyword">return</span> (<span class="type">int</span>)((v * <span class="number">254</span> + <span class="number">50</span>) / <span class="number">100</span>);   <span class="comment">// 50→127, 80→203, 100→254</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p><strong>转发</strong>：拼成 <code>SET b c s h\n</code> 发出去。</p>
+<figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">inline</span> <span class="type">bool</span> <span class="title">forward_levels100</span><span class="params">(<span class="type">long</span> <span class="type">long</span> b, <span class="type">long</span> <span class="type">long</span> c, <span class="type">long</span> <span class="type">long</span> s, <span class="type">long</span> <span class="type">long</span> h)</span> </span>&#123;</span><br><span class="line">    <span class="type">char</span> cmd[<span class="number">96</span>], reply[<span class="number">128</span>];</span><br><span class="line">    <span class="built_in">snprintf</span>(cmd, <span class="keyword">sizeof</span>(cmd), <span class="string">&quot;SET %d %d %d %d\n&quot;</span>,</span><br><span class="line">             <span class="built_in">level100_to_255</span>(b), <span class="built_in">level100_to_255</span>(c),</span><br><span class="line">             <span class="built_in">level100_to_255</span>(s), <span class="built_in">level100_to_255</span>(h));</span><br><span class="line">    <span class="keyword">if</span> (!<span class="built_in">send_cmd</span>(cmd, reply, <span class="keyword">sizeof</span>(reply))) &#123;</span><br><span class="line">        <span class="built_in">printf</span>(<span class="string">&quot;[aiq] paramd 不在线\n&quot;</span>);</span><br><span class="line">        <span class="keyword">return</span> <span class="literal">false</span>;   <span class="comment">// 容错：不影响 CRUD 主流程</span></span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> <span class="literal">true</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p><strong>三个触发点</strong>（在 <code>hook_impl.hpp</code> 里）：</p>
+<ol>
+<li><strong>创建图像参数行时</strong>：CRUD create 钩子调 <code>aiq_push_from_row()</code></li>
+<li><strong>更新图像参数行时</strong>：CRUD update 钩子先 <code>get</code> 完整行（因为 PUT body 可能只传了部分字段），再调 <code>aiq_push_from_row()</code></li>
+<li><strong>服务启动时</strong>：<code>aiq_sync_image_params_from_db()</code> 从库读全部 image 行逐行推给 paramd，确保 paramd 重启后参数能恢复</li>
+</ol>
+<p><strong>踩过的坑</strong>：发命令忘了带 <code>\n</code>。paramd 按换行分帧，没有 <code>\n</code> 就永远等不到完整命令；device_platform 也在等回包，双方死锁。加上 <code>\n</code> 后立刻通了。</p>
+<h2 id="第九步：数据库改造——参数挂通道不挂码流"><a href="#第九步：数据库改造——参数挂通道不挂码流" class="headerlink" title="第九步：数据库改造——参数挂通道不挂码流"></a>第九步：数据库改造——参数挂通道不挂码流</h2><p>原来的 <code>tki_video_image</code> 表挂靠在码流上（<code>stream_id</code>），每个码流一行。但这有个问题：<strong>主码流和子码流共用同一套 ISP</strong>，按码流各存一份参数，调主码流时子码流不跟着变，两边会打架。</p>
+<p>所以改成挂通道（<code>channel_id</code>），一个通道一行。写了一个 V003 升级脚本做迁移：</p>
+<figure class="highlight sql"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">-- 创建新表（channel_id 替代 stream_id）</span></span><br><span class="line"><span class="keyword">CREATE TABLE</span> tki_video_image_new (</span><br><span class="line">  id TEXT <span class="keyword">PRIMARY KEY</span>,</span><br><span class="line">  channel_id TEXT <span class="keyword">NOT NULL</span>,</span><br><span class="line">  brightness <span class="type">INTEGER</span> <span class="keyword">DEFAULT</span> <span class="number">50</span>,</span><br><span class="line">  contrast <span class="type">INTEGER</span> <span class="keyword">DEFAULT</span> <span class="number">50</span>,</span><br><span class="line">  saturation <span class="type">INTEGER</span> <span class="keyword">DEFAULT</span> <span class="number">50</span>,</span><br><span class="line">  hue <span class="type">INTEGER</span> <span class="keyword">DEFAULT</span> <span class="number">50</span>,</span><br><span class="line">  ...</span><br><span class="line">);</span><br><span class="line"></span><br><span class="line"><span class="comment">-- 从老表迁移：经码流表找所属通道，同一通道只保留一行（主码流优先）</span></span><br><span class="line"><span class="keyword">INSERT INTO</span> tki_video_image_new</span><br><span class="line"><span class="keyword">SELECT</span> i.id, s.channel_id, i.brightness, i.contrast, i.saturation, i.hue, ...</span><br><span class="line"><span class="keyword">FROM</span> tki_video_image i</span><br><span class="line"><span class="keyword">JOIN</span> tki_video_stream s <span class="keyword">ON</span> s.id <span class="operator">=</span> i.stream_id</span><br><span class="line"><span class="keyword">WHERE</span> s.channel_id <span class="keyword">IS</span> <span class="keyword">NOT NULL</span> <span class="keyword">AND</span> s.channel_id <span class="operator">&lt;&gt;</span> <span class="string">&#x27;&#x27;</span></span><br><span class="line">  <span class="keyword">AND</span> <span class="keyword">NOT</span> <span class="keyword">EXISTS</span> (<span class="keyword">SELECT</span> <span class="number">1</span> <span class="keyword">FROM</span> tki_video_image_new x <span class="keyword">WHERE</span> x.channel_id <span class="operator">=</span> s.channel_id)</span><br><span class="line"><span class="keyword">ORDER</span> <span class="keyword">BY</span> <span class="keyword">CASE</span> s.stream_name <span class="keyword">WHEN</span> <span class="string">&#x27;main&#x27;</span> <span class="keyword">THEN</span> <span class="number">0</span> <span class="keyword">ELSE</span> <span class="number">1</span> <span class="keyword">END</span>, i.created_at;</span><br><span class="line"></span><br><span class="line"><span class="keyword">DROP</span> <span class="keyword">TABLE</span> tki_video_image;</span><br><span class="line"><span class="keyword">ALTER TABLE</span> tki_video_image_new RENAME <span class="keyword">TO</span> tki_video_image;</span><br></pre></td></tr></table></figure>
+
+<p><strong>踩的坑</strong>：</p>
+<ul>
+<li>脚本里写了 <code>s.stream_type</code>，但表里实际叫 <code>s.stream_name</code>（main&#x2F;sub），INSERT 失败。更坑的是升级器有 bug——脚本执行失败但版本号照样记录，事务回滚没兜住。排查方法：对比 <code>select * from tki_schema_version</code>（版本号）和 <code>.schema</code>（实际表结构），如果版本记了但表没改，手动删版本记录 + 清残留表 + 修脚本重跑。</li>
+<li><code>INSERT...SELECT</code> 的 <code>NOT EXISTS</code> 在同一语句里防重不可靠（同一个通道出现了两行），需要事后用 <code>DELETE WHERE rowid NOT IN (SELECT MIN(rowid) ... GROUP BY channel_id)</code> 清理。</li>
+<li>网络相机（大华）的 image 行也会被启动同步推给 ISP。这块板只有一套 ISP，”最后写入者赢”，网络相机的参数会错误覆盖 MIPI 的设置。网络相机的调参应走 ONVIF Imaging，不是本地 ISP，所以把那行删了。</li>
+</ul>
+<h2 id="第十步：开机自启"><a href="#第十步：开机自启" class="headerlink" title="第十步：开机自启"></a>第十步：开机自启</h2><p>板子重启后必须自动恢复，否则方案就失效了。关键点：<strong>原来的 S40rkaiq_3A 会自启 3A server 抢占 ISP，必须禁用</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>脚本</th>
+<th>状态</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>S40rkaiq_3A</td>
+<td>已禁用（改名 <code>disabled_S40rkaiq_3A</code>，保留可恢复）</td>
+<td>原 RK 官方 3A server</td>
+</tr>
+<tr>
+<td>S41aiq_paramd</td>
+<td>新增（root）</td>
+<td>起 paramd + <strong>等 socket 就绪最多 20 秒</strong></td>
+</tr>
+<tr>
+<td>S45device_platform</td>
+<td>新增（forlinx）</td>
+<td>起业务服务 8080</td>
+</tr>
+</tbody></table>
+<p><strong>启动顺序铁律</strong>：清残留 socket → paramd → device_platform。</p>
+<p>S41 为什么要等 socket：S45 起 device_platform 时，它会从库同步参数推给 paramd。如果 paramd 还在 init（约 5 秒），socket 没就绪，同步就连不上，参数推不过去。所以 S41 启动 paramd 后会轮询 socket 文件是否存在，最多等 20 秒才返回，确保 S45 起服务时 paramd 已就绪。</p>
+<p>这个竞态踩过——第一次冷启动后 paramd 值是 128（命令行初值）而不是库同步的 127，就是因为 dp 起得太早。</p>
+<h2 id="验收"><a href="#验收" class="headerlink" title="验收"></a>验收</h2><p><strong>端到端测试</strong>：</p>
+<figure class="highlight routeros"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">PUT /api/video-images/vim_main &#123;<span class="string">&quot;saturation&quot;</span>:80&#125;</span><br><span class="line">→ 库更新 <span class="attribute">saturation</span>=80</span><br><span class="line">→ paramd 收到 <span class="built_in">SET</span> 127 127 203 127（80×254/<span class="attribute">100</span>=203）</span><br><span class="line">→ ISP 下一帧饱和度变化</span><br><span class="line">→ 画面变浓艳</span><br></pre></td></tr></table></figure>
+
+<p>全程约 8 秒生效，<strong>不需要重启任何进程</strong>。</p>
+<p><strong>冷启动测试</strong>（两轮）：</p>
+<ul>
+<li>paramd 自动起 → dp 自动起 → 8080 监听 → 库里的中性参数（50&#x2F;50&#x2F;50&#x2F;50 → 127&#x2F;127&#x2F;127&#x2F;127）自动同步进 ISP → 画面正常（29.9fps）</li>
+<li>3A server 正确不启动（S40 已禁用）</li>
+</ul>
+<p><strong>肉眼验证</strong>：</p>
+<ul>
+<li>saturation&#x3D;0 时画面是纯黑白灰度（U&#x2F;V&#x3D;128.00）</li>
+<li>saturation&#x3D;200 时色彩明显更浓艳</li>
+<li>brightness&#x3D;200 时画面明显更亮（Yavg 从 118 涨到 190）</li>
+</ul>
+<h2 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h2><p>整个方案的核心决策链条：</p>
+<ol>
+<li><strong>选 rkaiq 而非 videobalance</strong>——零 CPU 开销，进码流，全平台生效</li>
+<li><strong>选独立守护进程而非链进业务服务</strong>——权限隔离（只有 paramd 需要 root），故障隔离</li>
+<li><strong>选 unix socket 而非 dbus&#x2F;共享内存</strong>——板上没有 dbus，也没有 <code>/dev/aiq_share_mem</code>，socket 最简单</li>
+<li><strong>参数挂通道而非码流</strong>——主&#x2F;子码流共用一套 ISP，按码流存会互相覆盖</li>
+<li><strong>禁用原 3A server 而非共存</strong>——rkaiq 上下文全局唯一，没有 client 降级</li>
+</ol>
+<p>踩过的坑（按时间顺序）：</p>
+<ul>
+<li>以为 librkaiq 有 client 模式，实测段错误</li>
+<li>busybox <code>ps</code> 不显示 root 进程，误判 3A 没起来</li>
+<li>发命令忘了带 <code>\n</code>，双方死锁</li>
+<li>brightness&#x3D;255 黑屏（uint8 溢出）</li>
+<li>升级脚本引用了不存在的列名（stream_type vs stream_name）</li>
+<li>升级器事务回滚有 bug，脚本失败但版本号照记</li>
+<li>开机自启竞态（dp 起得太早，paramd 还没就绪）</li>
+</ul>
+<p>每一个坑都花了时间排查，但也都留下了实测数据。最终方案经受住了两轮冷启动验证，从前端拉滑杆到画面变化全链路打通。</p>
+<h2 id="附：文件清单"><a href="#附：文件清单" class="headerlink" title="附：文件清单"></a>附：文件清单</h2><table>
+<thead>
+<tr>
+<th>文件</th>
+<th>位置</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>aiq_paramd.c</td>
+<td>虚拟机 <code>/home/elf/forlinx/my/</code></td>
+<td>守护进程本体（生产用）</td>
+</tr>
+<tr>
+<td>aiq_cli.c</td>
+<td>同上</td>
+<td>调试客户端</td>
+</tr>
+<tr>
+<td>aiq_client.hpp</td>
+<td><code>backend/src/core/</code></td>
+<td>device_platform 侧转发</td>
+</tr>
+<tr>
+<td>hook_impl.hpp</td>
+<td><code>backend/src/app/</code></td>
+<td>CRUD 钩子 + 启动同步</td>
+</tr>
+<tr>
+<td>V003__video_image_channel.sql</td>
+<td><code>backend/sql/upgrade/</code></td>
+<td>数据库迁移</td>
+</tr>
+<tr>
+<td>S41aiq_paramd</td>
+<td>板上 <code>/etc/init.d/</code></td>
+<td>paramd 自启</td>
+</tr>
+<tr>
+<td>S45device_platform</td>
+<td>同上</td>
+<td>业务服务自启</td>
+</tr>
+</tbody></table>
+<p>协议速查：</p>
+<table>
+<thead>
+<tr>
+<th>命令</th>
+<th>含义</th>
+<th>回复</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>SET 128 128 128 128\n</code></td>
+<td>设四参数（0~254，127 中性）</td>
+<td><code>OK 128 128 128 128</code></td>
+</tr>
+<tr>
+<td><code>GET\n</code></td>
+<td>读当前值</td>
+<td><code>OK 128 128 128 128</code></td>
+</tr>
+<tr>
+<td><code>PING\n</code></td>
+<td>心跳</td>
+<td><code>PONG</code></td>
+</tr>
+<tr>
+<td><code>QUIT\n</code></td>
+<td>让 paramd 退出</td>
+<td><code>BYE</code></td>
+</tr>
+</tbody></table>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-ISP%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0%E8%B0%83%E6%95%B4-%E4%BB%8Erkaiq%E6%8E%A5%E7%AE%A1%E5%88%B0%E5%89%8D%E7%AB%AF%E8%B0%83%E8%89%B2/" data-id="cuid9wQdmC2UnUK6pmQ-9s87Z" data-title="ISP 图像参数调整：从 rkaiq 接管到前端调色" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/rkaiq/" rel="tag">rkaiq</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0/" rel="tag">图像参数</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li></ul>
+
+    </footer>
+  </div>
+  
+</article>
+
+
+
+  
     <article id="post-2026-11-07-流媒体四参数-分辨率帧率码率GOP讲清楚" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
   <div class="article-meta">
     <a href="/2026/11/07/2026-11-07-%E6%B5%81%E5%AA%92%E4%BD%93%E5%9B%9B%E5%8F%82%E6%95%B0-%E5%88%86%E8%BE%A8%E7%8E%87%E5%B8%A7%E7%8E%87%E7%A0%81%E7%8E%87GOP%E8%AE%B2%E6%B8%85%E6%A5%9A/" class="article-date">
@@ -741,7 +1190,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%B5%81%E5%AA%92%E4%BD%93%E5%9B%9B%E5%8F%82%E6%95%B0-%E5%88%86%E8%BE%A8%E7%8E%87%E5%B8%A7%E7%8E%87%E7%A0%81%E7%8E%87GOP%E8%AE%B2%E6%B8%85%E6%A5%9A/" data-id="cuidFHgmNkj36mmXAePepuJGt" data-title="分辨率、帧率、码率、GOP：视频参数一次讲明白" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%B5%81%E5%AA%92%E4%BD%93%E5%9B%9B%E5%8F%82%E6%95%B0-%E5%88%86%E8%BE%A8%E7%8E%87%E5%B8%A7%E7%8E%87%E7%A0%81%E7%8E%87GOP%E8%AE%B2%E6%B8%85%E6%A5%9A/" data-id="cuidQUJDWsCGpq-SJA_priZYm" data-title="分辨率、帧率、码率、GOP：视频参数一次讲明白" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -1609,7 +2058,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/" data-id="cuidt1a53xOK3ma6aMq7u64lH" data-title="从零搭一套 Hexo + GitHub Pages 博客，并做到一条命令发布" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/" data-id="cuidu6yvjlVwg9xUrVRm-D_qw" data-title="从零搭一套 Hexo + GitHub Pages 博客，并做到一条命令发布" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -2163,7 +2612,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/" data-id="cuideE8iw-HYOr9dERKLQwBig" data-title="搞不清 V4L2、GStreamer、appsink？一篇讲透" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/" data-id="cuidXH0zV3IJttYxoVhRqpxyy" data-title="搞不清 V4L2、GStreamer、appsink？一篇讲透" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -3699,7 +4148,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidm0-2s3Uq-anKceHWkX7b6" data-title="摄像头开发入门：从一台陌生设备，到浏览器里出画面" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidvNDW7uatQn7D_CBGrqrE9" data-title="摄像头开发入门：从一台陌生设备，到浏览器里出画面" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -4251,7 +4700,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuid_Il0OppqlbIN5pk0FM66_" data-title="从摄像头到网页：一次完整的视频链路拆解" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidARIEnveskN-HzmCKlmjFB" data-title="从摄像头到网页：一次完整的视频链路拆解" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -4393,7 +4842,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" data-id="cuidNXdi25aSXgtaWed0ppGem" data-title="我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" data-id="cuidhc5DwRMZ2BXUsvGBqdN5v" data-title="我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -4427,7 +4876,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">标签</h3>
     <div class="widget">
-      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/GitHub-Pages/" rel="tag">GitHub Pages</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/H-264/" rel="tag">H.264</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Hexo/" rel="tag">Hexo</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/V4L2/" rel="tag">V4L2</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/WebSocket/" rel="tag">WebSocket</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%8D%9A%E5%AE%A2/" rel="tag">博客</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" rel="tag">摄像头</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" rel="tag">新人向</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" rel="tag">流媒体</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" rel="tag">视频编码</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" rel="tag">视频链路</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/GitHub-Pages/" rel="tag">GitHub Pages</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/H-264/" rel="tag">H.264</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Hexo/" rel="tag">Hexo</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/V4L2/" rel="tag">V4L2</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/WebSocket/" rel="tag">WebSocket</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/rkaiq/" rel="tag">rkaiq</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%8D%9A%E5%AE%A2/" rel="tag">博客</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0/" rel="tag">图像参数</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" rel="tag">摄像头</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" rel="tag">新人向</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" rel="tag">流媒体</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" rel="tag">视频编码</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" rel="tag">视频链路</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
     </div>
   </div>
 
@@ -4437,7 +4886,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">标签云</h3>
     <div class="widget tagcloud">
-      <a href="/tags/GStreamer/" style="font-size: 20px;">GStreamer</a> <a href="/tags/GitHub-Pages/" style="font-size: 10px;">GitHub Pages</a> <a href="/tags/H-264/" style="font-size: 10px;">H.264</a> <a href="/tags/Hexo/" style="font-size: 10px;">Hexo</a> <a href="/tags/ISP/" style="font-size: 10px;">ISP</a> <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/RV1126B/" style="font-size: 10px;">RV1126B</a> <a href="/tags/V4L2/" style="font-size: 15px;">V4L2</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/%E5%8D%9A%E5%AE%A2/" style="font-size: 10px;">博客</a> <a href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" style="font-size: 15px;">嵌入式</a> <a href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" style="font-size: 10px;">摄像头</a> <a href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" style="font-size: 20px;">新人向</a> <a href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" style="font-size: 10px;">流媒体</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" style="font-size: 10px;">视频编码</a> <a href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" style="font-size: 10px;">视频链路</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 15px;">调试复盘</a>
+      <a href="/tags/GStreamer/" style="font-size: 20px;">GStreamer</a> <a href="/tags/GitHub-Pages/" style="font-size: 10px;">GitHub Pages</a> <a href="/tags/H-264/" style="font-size: 10px;">H.264</a> <a href="/tags/Hexo/" style="font-size: 10px;">Hexo</a> <a href="/tags/ISP/" style="font-size: 15px;">ISP</a> <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/RV1126B/" style="font-size: 10px;">RV1126B</a> <a href="/tags/V4L2/" style="font-size: 15px;">V4L2</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/rkaiq/" style="font-size: 10px;">rkaiq</a> <a href="/tags/%E5%8D%9A%E5%AE%A2/" style="font-size: 10px;">博客</a> <a href="/tags/%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0/" style="font-size: 10px;">图像参数</a> <a href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" style="font-size: 20px;">嵌入式</a> <a href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" style="font-size: 10px;">摄像头</a> <a href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" style="font-size: 20px;">新人向</a> <a href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" style="font-size: 10px;">流媒体</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" style="font-size: 10px;">视频编码</a> <a href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" style="font-size: 10px;">视频链路</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 15px;">调试复盘</a>
     </div>
   </div>
 
@@ -4459,6 +4908,10 @@
       <ul>
         
           <li>
+            <a href="/2026/11/07/2026-11-07-ISP%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0%E8%B0%83%E6%95%B4-%E4%BB%8Erkaiq%E6%8E%A5%E7%AE%A1%E5%88%B0%E5%89%8D%E7%AB%AF%E8%B0%83%E8%89%B2/">ISP 图像参数调整：从 rkaiq 接管到前端调色</a>
+          </li>
+        
+          <li>
             <a href="/2026/11/07/2026-11-07-%E6%B5%81%E5%AA%92%E4%BD%93%E5%9B%9B%E5%8F%82%E6%95%B0-%E5%88%86%E8%BE%A8%E7%8E%87%E5%B8%A7%E7%8E%87%E7%A0%81%E7%8E%87GOP%E8%AE%B2%E6%B8%85%E6%A5%9A/">分辨率、帧率、码率、GOP：视频参数一次讲明白</a>
           </li>
         
@@ -4472,10 +4925,6 @@
         
           <li>
             <a href="/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/">摄像头开发入门：从一台陌生设备，到浏览器里出画面</a>
-          </li>
-        
-          <li>
-            <a href="/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/">从摄像头到网页：一次完整的视频链路拆解</a>
           </li>
         
       </ul>
