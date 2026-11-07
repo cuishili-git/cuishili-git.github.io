@@ -77,6 +77,558 @@
       <div class="outer">
         <section id="main">
   
+    <article id="post-2026-11-07-视频链路全流程-从摄像头到网页播放" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" class="article-date">
+  <time class="dt-published" datetime="2026-11-07T02:42:47.000Z" itemprop="datePublished">2026-11-07</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/%E5%AE%9E%E6%88%98%E9%A1%B9%E7%9B%AE/">实战项目</a>
+  </div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 itemprop="name">
+      <a class="p-name article-title" href="/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/">从摄像头到网页：一次完整的视频链路拆解</a>
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <blockquote>
+<p>记录一个嵌入式视频平台（RV1126B + GStreamer + Vue3）从「设备接入」到「网页出画」的完整链路，<br>以及沿途踩过的坑。所有代码与数据均来自实际部署环境，不是示意。</p>
+</blockquote>
+<h2 id="0-全局视图"><a href="#0-全局视图" class="headerlink" title="0. 全局视图"></a>0. 全局视图</h2><p>整条链路可以切成五段，每段的职责边界很清楚：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>做什么</th>
+<th>关键组件</th>
+<th>产物</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>① 设备接入</td>
+<td>设备&#x2F;通道&#x2F;码流建模</td>
+<td>SQLite <code>tsl.db</code></td>
+<td>一条码流配置</td>
+</tr>
+<tr>
+<td>② ISP 配置</td>
+<td>读写图像参数</td>
+<td><code>deviceControl</code> → Worker → V4L2 &#x2F; SOAP</td>
+<td>sensor 参数</td>
+</tr>
+<tr>
+<td>③ 拉流编码</td>
+<td>采集 + 编码</td>
+<td>GStreamer 管线</td>
+<td>H.264 Annex B</td>
+</tr>
+<tr>
+<td>④ 分发推流</td>
+<td>一管线多观众</td>
+<td><code>Hub</code> + WebSocket</td>
+<td>二进制帧</td>
+</tr>
+<tr>
+<td>⑤ 解码播放</td>
+<td>MSE &#x2F; WebCodecs</td>
+<td><code>H264Player.vue</code></td>
+<td>画面</td>
+</tr>
+</tbody></table>
+<p>值得先说明的一点：<strong>②和③是弱耦合的</strong>。ISP 配置通过 REST 走 <code>deviceControl</code>，拉流走<br>WebSocket，两条路互不阻塞。所以「调参数时画面卡一下」不会互相拖累，但反过来也意味着<br><strong>改完 ISP 参数不会自动重开流</strong>，需要前端自己处理刷新。</p>
+<hr>
+<h2 id="1-设备接入：为什么要有三层模型"><a href="#1-设备接入：为什么要有三层模型" class="headerlink" title="1. 设备接入：为什么要有三层模型"></a>1. 设备接入：为什么要有三层模型</h2><p>很多简单方案是「一个摄像头一个 URL，存个 JSON 完事」。这套系统用了三层，是为了让<br><strong>同一套代码同时支持 MIPI 本地相机和 ONVIF 网络相机</strong>。</p>
+<figure class="highlight 1c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">tki_device（设备）</span><br><span class="line">  └─ tki_product（产品，含 impl_class <span class="punctuation">=</span> onvif <span class="string">| mipi）</span></span><br><span class="line">       └─ tki_product_service（这个产品支持哪些命令）</span><br><span class="line">  └─ tki_video_channel（通道，一台设备可以有多个镜头）</span><br><span class="line">       └─ tki_video_stream（码流，main / sub 各一条）</span><br></pre></td></tr></table></figure>
+
+<p>关键字段：</p>
+<table>
+<thead>
+<tr>
+<th>表</th>
+<th>字段</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>tki_product</code></td>
+<td><code>impl_class</code></td>
+<td><strong>决定用哪个 Worker</strong>，<code>onvif</code> &#x2F; <code>mipi</code></td>
+</tr>
+<tr>
+<td><code>tki_product_service</code></td>
+<td><code>code</code></td>
+<td>允许调用的命令名，未声明 → 404</td>
+</tr>
+<tr>
+<td><code>tki_device_attr</code></td>
+<td><code>video_node</code></td>
+<td>MIPI 采集节点，如 <code>/dev/video23</code></td>
+</tr>
+<tr>
+<td><code>tki_device_attr</code></td>
+<td>账号密码</td>
+<td>ONVIF 认证用</td>
+</tr>
+<tr>
+<td><code>tki_video_stream</code></td>
+<td><code>width/height/fps/bitrate_kbps/gop</code></td>
+<td><strong>编码参数的唯一来源</strong></td>
+</tr>
+</tbody></table>
+<p>踩过的坑：ONVIF 明明加了 <code>set_image_params</code>，前端调还是报错<br><code>未实现的服务: set_image_params</code>。第一反应是「物模型没登记」，其实是 worker 的<br><code>invoke()</code> 里没有对应分支 —— 这句提示是 worker 层返回的，不是路由层。两者的区别<br>很重要：物模型没登记 → 路由层 404；物模型登记了但 worker 没实现 → 任务失败 +<br><code>未实现的服务</code>。</p>
+<hr>
+<h2 id="2-取流入口：一个-URL-决定走哪条管线"><a href="#2-取流入口：一个-URL-决定走哪条管线" class="headerlink" title="2. 取流入口：一个 URL 决定走哪条管线"></a>2. 取流入口：一个 URL 决定走哪条管线</h2><p>前端连接的是：</p>
+<figure class="highlight ruby"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="symbol">ws:</span>/<span class="regexp">/192.168.1.232:8080/api</span><span class="regexp">/stream/</span>&lt;session&gt;<span class="string">?d</span>evice_id=xxx&amp;channel=<span class="number">1</span>&amp;stream=main</span><br></pre></td></tr></table></figure>
+
+<p><code>&lt;session&gt;</code> 是前端随机生成的 6 位串（<code>Math.random().toString(36).slice(2, 8)</code>），<br>只用于日志区分，不参与业务逻辑。</p>
+<p>服务端 <code>resolve_spec()</code> 把它翻译成一份 <code>StreamSpec</code>：</p>
+<figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">struct</span> <span class="title class_">StreamSpec</span> &#123;</span><br><span class="line">    <span class="type">int</span>  kind = <span class="number">1</span>;        <span class="comment">// 0=RTSP  1=MIPI  2=测试图</span></span><br><span class="line">    std::string device;   <span class="comment">// /dev/video23 或空</span></span><br><span class="line">    std::string url;      <span class="comment">// rtsp://...</span></span><br><span class="line">    <span class="type">int</span> width = <span class="number">1920</span>, height = <span class="number">1080</span>, fps = <span class="number">25</span>;</span><br><span class="line">    <span class="type">int</span> bitrate_kbps = <span class="number">2048</span>, gop = <span class="number">50</span>;</span><br><span class="line">    std::string key;      <span class="comment">// 缓存键，决定是否复用管线</span></span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+
+<p><code>kind</code> 的判定不看「哪个属性存在」，而是<strong>看 <code>tki_video_stream.rtsp_path</code> 这个字段<br>的值长什么样</strong> —— 同一个字段承载两种语义：</p>
+<table>
+<thead>
+<tr>
+<th><code>rtsp_path</code> 的值</th>
+<th>kind</th>
+<th>走什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>rtsp://...</code></td>
+<td>0</td>
+<td>RTSP 纯转发，<code>spec.url</code> 就是它</td>
+</tr>
+<tr>
+<td><code>/dev/video23</code> 这类设备节点</td>
+<td>1</td>
+<td>V4L2 采集</td>
+</tr>
+<tr>
+<td>空</td>
+<td>1</td>
+<td>去设备属性里取 <code>video_node</code>，兜底 <code>/dev/video23</code></td>
+</tr>
+</tbody></table>
+<p>这样设计的好处是<strong>库表字段不用分两张表</strong>，坏处是<strong>填错了不会报错</strong> ——<br>把 <code>/dev/video23</code> 写成 <code>video23</code>，就落进「空」那支，静默走默认节点。</p>
+<p>顺带一个边界：<code>pipeline_desc()</code> 里确实有 <code>kind==2</code> 的 <code>videotestsrc</code> 分支，<br>但 <code>resolve_spec()</code> 从不产生 2，目前是死代码，留着调试用。</p>
+<p><code>key</code> 的拼法是 <code>&lt;channel_id&gt;/&lt;stream_name&gt;</code>，比如 <code>vch_tki_device_1793792600_2_1/main</code>。<br><strong>同一个 key 全局只有一条管线</strong>，这是后面所有复用逻辑的基础。</p>
+<hr>
+<h2 id="3-双链路的分岔点"><a href="#3-双链路的分岔点" class="headerlink" title="3. 双链路的分岔点"></a>3. 双链路的分岔点</h2><p>这是整个系统最容易被误解的地方：<strong>MIPI 和 ONVIF 走的是完全不同的处理路径</strong>。</p>
+<figure class="highlight erlang-repl"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">ONVIF（kind=<span class="number">0</span>，纯转发）</span><br><span class="line">  rtspsrc ! rtph264depay ! h264parse ! appsink</span><br><span class="line">  ↑ 不解码、不重编码，分辨率由摄像头自己决定</span><br><span class="line"></span><br><span class="line">MIPI（kind=<span class="number">1</span>，真实采集 + 编码）</span><br><span class="line">  v4l2src ! video/x-raw,NV12,WxH ! mpph264enc ! h264parse ! appsink</span><br><span class="line">  ↑ 分辨率由我们通过 caps 控制，编码器在板子上</span><br></pre></td></tr></table></figure>
+
+<p>这意味着：</p>
+<ul>
+<li>想改 ONVIF 摄像头的分辨率 → 去摄像头自己的 Web 页面改，<strong>改库没用</strong></li>
+<li>想改 MIPI 的分辨率 → 改 <code>tki_video_stream</code> 表，<strong>立刻生效</strong></li>
+</ul>
+<p>同一个 <code>pipeline_desc()</code> 函数里，<code>kind==0</code> 分支根本不读 <code>width/height</code>，只在<br><code>kind==1/2</code> 时才会拼进 caps。</p>
+<hr>
+<h2 id="4-ISP-配置读写"><a href="#4-ISP-配置读写" class="headerlink" title="4. ISP 配置读写"></a>4. ISP 配置读写</h2><h3 id="4-1-deviceControl-是什么"><a href="#4-1-deviceControl-是什么" class="headerlink" title="4.1 deviceControl 是什么"></a>4.1 <code>deviceControl</code> 是什么</h3><p>统一入口是一个 URI，不是 service（这点容易说错）：</p>
+<figure class="highlight dts"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">POST <span class="keyword">/api/</span><span class="title class_">deviceControl</span></span><br><span class="line"><span class="punctuation">&#123;</span><span class="string">&quot;device_id&quot;</span>: <span class="string">&quot;dev_cam001&quot;</span>, <span class="string">&quot;cmd&quot;</span>: <span class="string">&quot;get_image_params&quot;</span>, <span class="string">&quot;params&quot;</span>: <span class="punctuation">&#123;</span><span class="punctuation">&#125;</span><span class="punctuation">&#125;</span></span><br><span class="line"></span><br><span class="line">→ <span class="punctuation">&#123;</span><span class="string">&quot;code&quot;</span>:<span class="number">200</span>, <span class="string">&quot;result&quot;</span>:<span class="punctuation">&#123;</span><span class="string">&quot;task_id&quot;</span>:<span class="string">&quot;task_1706137900_26&quot;</span><span class="punctuation">&#125;</span><span class="punctuation">&#125;</span></span><br><span class="line">→ 轮询 GET <span class="keyword">/api/</span>tasks/:task_id</span><br></pre></td></tr></table></figure>
+
+<p>为什么做成异步任务而不是同步返回？因为 ONVIF 的 SOAP 请求可能超时 3 秒，<br>modbus 可能占着串口 5 秒。同步会把 HTTP 线程池堵死。</p>
+<h3 id="4-2-到-Worker-的映射链"><a href="#4-2-到-Worker-的映射链" class="headerlink" title="4.2 到 Worker 的映射链"></a>4.2 到 Worker 的映射链</h3><figure class="highlight dns"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">device_id</span><br><span class="line">  → tki_device.product_id</span><br><span class="line">  → tki_product.impl_class        <span class="punctuation">(</span><span class="string">&quot;mipi&quot;</span> / <span class="string">&quot;onvif&quot;</span><span class="punctuation">)</span></span><br><span class="line">  → WorkerManager<span class="number">::fac</span>tories_     <span class="punctuation">(</span>静态自注册的工厂<span class="punctuation">)</span></span><br><span class="line">  → IWorker<span class="number">::</span>invoke<span class="punctuation">(</span>dc, svc_code, params, out, err<span class="punctuation">)</span></span><br></pre></td></tr></table></figure>
+
+<p>工厂注册在各 worker 头文件尾部，靠<strong>静态对象构造</strong>完成，<code>main</code> 不感知：</p>
+<figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="type">static</span> WorkerManager::Registrar <span class="title">s_reg_mipi_worker</span><span class="params">(<span class="string">&quot;mipi&quot;</span>, [] &#123;</span></span></span><br><span class="line"><span class="params"><span class="function">    <span class="keyword">return</span> (IWorker*)<span class="keyword">new</span> MipiWorker();</span></span></span><br><span class="line"><span class="params"><span class="function">&#125;)</span></span>;</span><br></pre></td></tr></table></figure>
+
+<p><code>impl_class</code> 没注册的话不会崩，会走 mock 兜底回显 <code>mock_ok</code> —— 这个设计有利有弊，<br>好处是加设备不阻塞，坏处是<strong>配错了不会报错，只会一直返回假数据</strong>。</p>
+<h3 id="4-3-MIPI：V4L2-层能碰什么"><a href="#4-3-MIPI：V4L2-层能碰什么" class="headerlink" title="4.3 MIPI：V4L2 层能碰什么"></a>4.3 MIPI：V4L2 层能碰什么</h3><p>13855 的 sensor 子设备是 <code>/dev/v4l-subdev5</code>，暴露的控件只有三个：</p>
+<figure class="highlight apache"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="attribute">exposure</span>         (<span class="number">0</span> ~ <span class="number">65535</span>)</span><br><span class="line"><span class="attribute">analogue_gain</span>    (<span class="number">0</span> ~ <span class="number">65535</span>)</span><br><span class="line"><span class="attribute">test_pattern</span></span><br></pre></td></tr></table></figure>
+
+<p><code>get_image_params</code> 返回的结构做了两层归一化 —— 既给原始值，也给 0~100 的百分比，<br>前端滑块直接用百分比，不用关心量程：</p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line"><span class="punctuation">&#123;</span></span><br><span class="line">  <span class="attr">&quot;node&quot;</span><span class="punctuation">:</span> <span class="string">&quot;/dev/v4l-subdev5&quot;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;values&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span></span><br><span class="line">    <span class="attr">&quot;exposure_time&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span><span class="attr">&quot;raw&quot;</span><span class="punctuation">:</span> <span class="number">2411</span><span class="punctuation">,</span> <span class="attr">&quot;pct&quot;</span><span class="punctuation">:</span> <span class="number">37</span><span class="punctuation">,</span> <span class="attr">&quot;min&quot;</span><span class="punctuation">:</span> <span class="number">0</span><span class="punctuation">,</span> <span class="attr">&quot;max&quot;</span><span class="punctuation">:</span> <span class="number">65535</span><span class="punctuation">,</span> <span class="attr">&quot;step&quot;</span><span class="punctuation">:</span> <span class="number">1</span><span class="punctuation">&#125;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;gain&quot;</span><span class="punctuation">:</span>          <span class="punctuation">&#123;</span><span class="attr">&quot;raw&quot;</span><span class="punctuation">:</span> <span class="number">128</span><span class="punctuation">,</span>  <span class="attr">&quot;pct&quot;</span><span class="punctuation">:</span> <span class="number">2</span><span class="punctuation">,</span>  <span class="attr">&quot;min&quot;</span><span class="punctuation">:</span> <span class="number">0</span><span class="punctuation">,</span> <span class="attr">&quot;max&quot;</span><span class="punctuation">:</span> <span class="number">65535</span><span class="punctuation">,</span> <span class="attr">&quot;step&quot;</span><span class="punctuation">:</span> <span class="number">1</span><span class="punctuation">&#125;</span></span><br><span class="line">  <span class="punctuation">&#125;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;unsupported&quot;</span><span class="punctuation">:</span> <span class="punctuation">[</span><span class="string">&quot;brightness&quot;</span><span class="punctuation">,</span> <span class="string">&quot;contrast&quot;</span><span class="punctuation">,</span> <span class="string">&quot;saturation&quot;</span><span class="punctuation">,</span> <span class="string">&quot;sharpness&quot;</span><span class="punctuation">,</span></span><br><span class="line">                  <span class="string">&quot;denoise&quot;</span><span class="punctuation">,</span> <span class="string">&quot;white_balance&quot;</span><span class="punctuation">,</span> <span class="string">&quot;hue&quot;</span><span class="punctuation">]</span></span><br><span class="line"><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
+
+<p><code>unsupported</code> 数组不是偷懒，是<strong>给前端的灰显依据</strong> —— 这些参数在这代 ISP 上根本没有<br>V4L2 旋钮，与其返回假值让用户白调，不如明确告诉前端「这个不可用」。</p>
+<h3 id="4-4-绕不开的-rkaiq-3A"><a href="#4-4-绕不开的-rkaiq-3A" class="headerlink" title="4.4 绕不开的 rkaiq 3A"></a>4.4 绕不开的 rkaiq 3A</h3><p>这是整个项目最反直觉的部分。</p>
+<p><code>rkaiq_3A_server</code> 是一个常驻进程，它<strong>每秒都在往 V4L2 写曝光和增益</strong>。你手动写<br><code>exposure=300</code>，1 秒内就会被它纠正回去。表现形式就是「调完滑块，刷新页面又变回原值」。</p>
+<p>更麻烦的是它的副作用：</p>
+<table>
+<thead>
+<tr>
+<th>操作</th>
+<th>后果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>正常运行时手动写 V4L2</td>
+<td>1 秒内被 3A 覆盖</td>
+</tr>
+<tr>
+<td><code>kill</code> 掉 3A</td>
+<td>采集管线断流 + ISP 状态污染（出黑白半调点阵）</td>
+</tr>
+<tr>
+<td>kill 后恢复</td>
+<td>必须<strong>重启板子</strong>，重启 3A 进程无效</td>
+</tr>
+</tbody></table>
+<p>所以正确的做法不是杀进程，而是让 3A 主动停手。项目里做了一个治理脚本：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">ae3a.sh on      <span class="comment"># 恢复 3A</span></span><br><span class="line">ae3a.sh off     <span class="comment"># 暂停 3A（保留进程，不再写参数）</span></span><br><span class="line">ae3a.sh query   <span class="comment"># 查询状态</span></span><br></pre></td></tr></table></figure>
+
+<p>配套 sudoers 白名单免密（这块板子没有 <code>/etc/sudoers.d</code>，只能直接改 <code>/etc/sudoers</code><br>并 <code>chmod 440</code>）。</p>
+<h3 id="4-5-AE-为什么会「一闪一闪」"><a href="#4-5-AE-为什么会「一闪一闪」" class="headerlink" title="4.5 AE 为什么会「一闪一闪」"></a>4.5 AE 为什么会「一闪一闪」</h3><p>排查亮度闪烁时踩的坑，值得单独记一笔。</p>
+<p>现象：画面亮度 <code>142 → 108 → 118 → 122 → 159 → 146 → 142</code> 循环，周期约 0.5 秒。</p>
+<p>直接读 sensor 曝光才发现根因：</p>
+<figure class="highlight basic"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="symbol">1928 </span>→ <span class="number">1928</span> → <span class="number">2893</span> → <span class="number">2893</span> → <span class="number">1928</span> → <span class="number">1928</span> → <span class="number">2893</span> ...</span><br></pre></td></tr></table></figure>
+
+<p><strong>曝光只在两个档位之间硬跳，增益始终是 128 完全没动。</strong></p>
+<p>翻 IQ 文件找到原因：</p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="attr">&quot;antiFlicker_en&quot;</span><span class="punctuation">:</span> <span class="number">1</span><span class="punctuation">,</span></span><br><span class="line"><span class="attr">&quot;antiFlicker_freq&quot;</span><span class="punctuation">:</span> <span class="string">&quot;50hz&quot;</span><span class="punctuation">,</span></span><br><span class="line"><span class="attr">&quot;route&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span></span><br><span class="line">  <span class="attr">&quot;time_dot&quot;</span><span class="punctuation">:</span> <span class="punctuation">[</span><span class="number">0</span><span class="punctuation">,</span> <span class="number">0.01</span><span class="punctuation">,</span> <span class="number">0.03</span><span class="punctuation">,</span> <span class="number">0.04</span><span class="punctuation">,</span> <span class="number">0.08</span><span class="punctuation">,</span> <span class="number">0.1</span><span class="punctuation">]</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;gain_dot&quot;</span><span class="punctuation">:</span> <span class="punctuation">[</span><span class="number">1</span><span class="punctuation">,</span> <span class="number">1</span><span class="punctuation">,</span> <span class="number">16</span><span class="punctuation">,</span> <span class="number">64</span><span class="punctuation">,</span> <span class="number">256</span><span class="punctuation">,</span> <span class="number">512</span><span class="punctuation">]</span></span><br><span class="line"><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
+
+<p>50Hz 抗闪烁强制曝光时间必须是 10ms 的整数倍。这颗 sensor 的行时间换算下来：</p>
+<ul>
+<li><code>1928</code> 行 ≈ 20.5ms ≈ 2 个半周期</li>
+<li><code>2893</code> 行 ≈ 30.7ms ≈ 3 个半周期</li>
+</ul>
+<p>中间没有别的档位可选。而 <code>route.time_dot</code> 在 0.03s 处又卡了个上限，曝光到 30ms<br>不许再拉长，增益通道没被启用 —— 于是 AE 被锁死在这个二选一里，场景亮度又恰好落在<br>正中间，就永远来回跳。</p>
+<p><strong>解法</strong>：现场是自然光，关掉 <code>antiFlicker_en</code>，曝光立刻恢复连续可调。</p>
+<p>改完实测：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>改前</th>
+<th>改后</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>曝光</td>
+<td>1928 ↔ 2893 硬跳</td>
+<td>2411 → 2380 → 2314 平滑</td>
+</tr>
+<tr>
+<td>亮度标准差</td>
+<td>13.43</td>
+<td><strong>0.15</strong></td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="5-GStreamer-管线"><a href="#5-GStreamer-管线" class="headerlink" title="5. GStreamer 管线"></a>5. GStreamer 管线</h2><h3 id="5-1-三条模板"><a href="#5-1-三条模板" class="headerlink" title="5.1 三条模板"></a>5.1 三条模板</h3><figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// kind=0 RTSP 纯转发</span></span><br><span class="line">rtspsrc location=<span class="string">&quot;&lt;url&gt;&quot;</span> user-id=<span class="string">&quot;&lt;u&gt;&quot;</span> user-pw=<span class="string">&quot;&lt;p&gt;&quot;</span> protocols=tcp latency=<span class="number">200</span></span><br><span class="line">  ! application/x-rtp,media=video</span><br><span class="line">  ! rtph264depay</span><br><span class="line">  ! h264parse</span><br><span class="line">  ! video/x-h264,stream-format=byte-stream,alignment=au</span><br><span class="line">  ! appsink name=vsink max-buffers=<span class="number">2</span> drop=<span class="literal">true</span> sync=<span class="literal">false</span> emit-signals=<span class="literal">false</span></span><br><span class="line"></span><br><span class="line"><span class="comment">// kind=1 MIPI 采集编码</span></span><br><span class="line">v4l2src device=/dev/video23 io-mode=<span class="number">4</span></span><br><span class="line">  ! video/x-raw,format=NV12,width=<span class="number">2112</span>,height=<span class="number">1568</span>,framerate=<span class="number">25</span>/<span class="number">1</span></span><br><span class="line">  ! mpph264enc rc-mode=<span class="number">1</span> bps=<span class="number">4096</span> gop=<span class="number">50</span></span><br><span class="line">  ! h264parse</span><br><span class="line">  ! video/x-h264,stream-format=byte-stream,alignment=au</span><br><span class="line">  ! appsink ...</span><br><span class="line"></span><br><span class="line"><span class="comment">// kind=2 测试图</span></span><br><span class="line">videotestsrc is-live=<span class="literal">true</span> pattern=ball</span><br><span class="line">  ! video/x-raw,format=NV12,width=<span class="number">1920</span>,height=<span class="number">1080</span>,framerate=<span class="number">25</span>/<span class="number">1</span></span><br><span class="line">  ! mpph264enc rc-mode=<span class="number">1</span> bps=<span class="number">2048</span> gop=<span class="number">50</span></span><br><span class="line">  ! h264parse ! ... ! appsink</span><br></pre></td></tr></table></figure>
+
+<p>两个细节：</p>
+<ul>
+<li><code>drop=true</code> + <code>max-buffers=2</code>：观众卡住时丢帧而不是堆积，避免内存无限涨</li>
+<li><code>sync=false</code>：不跟时钟对齐，出帧就推，延迟最低</li>
+</ul>
+<h3 id="5-2-分辨率到底是怎么生效的"><a href="#5-2-分辨率到底是怎么生效的" class="headerlink" title="5.2 分辨率到底是怎么生效的"></a>5.2 分辨率到底是怎么生效的</h3><p>链路是四段，理解它就能明白「为什么库里的配置有时不生效」：</p>
+<figure class="highlight arduino"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">tki_video_stream.width/height</span><br><span class="line">  → <span class="built_in">resolve_spec</span>() 填进 StreamSpec</span><br><span class="line">  → <span class="built_in">pipeline_desc</span>() 拼成 caps: video/x-raw,width=<span class="number">2112</span>,height=<span class="number">1568</span></span><br><span class="line">  → v4l2src 调 VIDIOC_S_FMT 提交给 rkisp 驱动</span><br><span class="line">  → 驱动裁剪 sensor 全图并缩放输出</span><br></pre></td></tr></table></figure>
+
+<p><strong>caps 是「请求」，不是「命令」。</strong> 驱动可以拒绝、可以取整。所以代码必须在首帧<br>从 <code>h264parse</code> 的 caps 回读真实值：</p>
+<figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">if</span> (actual_w_ == <span class="number">0</span>) &#123;</span><br><span class="line">    GstCaps* caps = <span class="built_in">gst_sample_get_caps</span>(s);</span><br><span class="line">    GstStructure* st = <span class="built_in">gst_caps_get_structure</span>(caps, <span class="number">0</span>);</span><br><span class="line">    <span class="built_in">gst_structure_get_int</span>(st, <span class="string">&quot;width&quot;</span>, &amp;actual_w_);</span><br><span class="line">    <span class="built_in">gst_structure_get_int</span>(st, <span class="string">&quot;height&quot;</span>, &amp;actual_h_);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>然后 <code>init</code> 帧用 <code>actual_w_</code> 而不是 <code>spec_.width</code>，前端按真实值初始化解码器。</p>
+<p>之前出过的问题：caps 里<strong>根本没写 width&#x2F;height</strong>（只写了 format 和 framerate），<br><code>v4l2src</code> 就沿用驱动默认值 &#x3D; ISP 主路径全分辨率 &#x3D; <strong>3840×2160</strong>，而库里配的是<br>2112×1500。结果编码器按 2Mbps 编 4K 撑不住，每 3~4 帧丢 2 帧，实际只有 19.5fps。</p>
+<p>修完的对比：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>修复前</th>
+<th>修复后</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>实际分辨率</td>
+<td>3840×2160</td>
+<td>2112×1568</td>
+</tr>
+<tr>
+<td>帧率</td>
+<td>19.54 fps</td>
+<td><strong>30.02 fps</strong></td>
+</tr>
+<tr>
+<td>帧间隔分布</td>
+<td>200 次 33ms + 72 次 100ms</td>
+<td><strong>418 次全 33.4ms，零丢帧</strong></td>
+</tr>
+</tbody></table>
+<p>另外一个坑：<strong>宽高比必须和 sensor 原生比例对齐</strong>。13855 原生 4224×3136 是 4:3，<br>所以 2112×1568 成立；库里原来写的 1500 不是 4:3（2112&#x2F;1500&#x3D;1.408），比例不对。</p>
+<h3 id="5-3-管线错误必须主动-pop"><a href="#5-3-管线错误必须主动-pop" class="headerlink" title="5.3 管线错误必须主动 pop"></a>5.3 管线错误必须主动 pop</h3><p>这是最容易写成「静默失败」的地方：</p>
+<figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">GstMessage* m = <span class="built_in">gst_bus_pop_filtered</span>(</span><br><span class="line">    bus_, (GstMessageType)(GST_MESSAGE_ERROR | GST_MESSAGE_EOS));</span><br></pre></td></tr></table></figure>
+
+<p>caps 协商失败、设备打不开、缺插件 —— <strong>全部只在这里体现</strong>。不 pop 的话表现是<br>「WebSocket 握手成功、前端连上了、但一帧都没有」，日志干净得像没事一样。</p>
+<p>当时排查主码流打不开，就是靠这里打出来的：</p>
+<figure class="highlight css"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="selector-attr">[stream]</span> .../<span class="selector-tag">main</span> 管线错误: Could not open resource for reading and writing.</span><br></pre></td></tr></table></figure>
+
+<p>翻译过来是 RTSP 状态码 <strong>461 Unsupported Transport</strong>。</p>
+<hr>
+<h2 id="6-帧封装与推流"><a href="#6-帧封装与推流" class="headerlink" title="6. 帧封装与推流"></a>6. 帧封装与推流</h2><h3 id="6-1-Hub：一条管线，多个观众"><a href="#6-1-Hub：一条管线，多个观众" class="headerlink" title="6.1 Hub：一条管线，多个观众"></a>6.1 Hub：一条管线，多个观众</h3><figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">class</span> <span class="title class_">Hub</span> &#123;</span><br><span class="line">    std::map&lt;std::string, std::shared_ptr&lt;Stream&gt;&gt; map_;   <span class="comment">// key → 管线</span></span><br><span class="line">    std::map&lt;std::string, <span class="type">int</span>&gt; refs_;                      <span class="comment">// key → 观众数</span></span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+
+<p><code>acquire(spec)</code> 的逻辑：</p>
+<figure class="highlight dns"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">key</span> 存在且活  → 引用计数 +<span class="number">1</span>，直接复用</span><br><span class="line"><span class="keyword">key</span> 存在但死  → 摘掉，重建</span><br><span class="line"><span class="keyword">key</span> 不存在    → 新建</span><br></pre></td></tr></table></figure>
+
+<p>为什么必须共享？一台摄像头并发 RTSP 会话数有限（大华这类机器尤其抠），<br>十个网页同时看主码流，如果各开一条管线，摄像头直接拒绝。</p>
+<h3 id="6-2-帧协议"><a href="#6-2-帧协议" class="headerlink" title="6.2 帧协议"></a>6.2 帧协议</h3><p>WS 上跑两种帧，靠 WebSocket 的帧类型区分：</p>
+<p><strong>文本帧（只发一次，首帧时）</strong></p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="punctuation">&#123;</span><span class="attr">&quot;type&quot;</span><span class="punctuation">:</span><span class="string">&quot;init&quot;</span><span class="punctuation">,</span><span class="attr">&quot;codec&quot;</span><span class="punctuation">:</span><span class="string">&quot;avc1.640032&quot;</span><span class="punctuation">,</span><span class="attr">&quot;width&quot;</span><span class="punctuation">:</span><span class="number">2112</span><span class="punctuation">,</span><span class="attr">&quot;height&quot;</span><span class="punctuation">:</span><span class="number">1568</span><span class="punctuation">,</span><span class="attr">&quot;fps&quot;</span><span class="punctuation">:</span><span class="number">25</span><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
+
+<p><code>codec</code> 是从 SPS 里现解的 —— 扫 NALU 找 type&#x3D;7（SPS），取紧随其后的 3 个字节：</p>
+<figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">if</span> ((d[p] &amp; <span class="number">0x1F</span>) == <span class="number">7</span>) &#123;</span><br><span class="line">    <span class="built_in">snprintf</span>(b, <span class="keyword">sizeof</span>(b), <span class="string">&quot;avc1.%02x%02x%02x&quot;</span>, d[p<span class="number">+1</span>], d[p<span class="number">+2</span>], d[p<span class="number">+3</span>]);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p><strong>二进制帧（每帧一个）</strong></p>
+<figure class="highlight asciidoc"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="code">+--------+</span>------------------<span class="code">+------------------+</span></span><br><span class="line"><span class="section">| 1B flag| 8B pts (大端)     | Annex B NALU     |</span></span><br><span class="line"><span class="section">+--------+------------------+------------------+</span></span><br></pre></td></tr></table></figure>
+
+<p><code>pts</code> 用 <code>GST_BUFFER_PTS</code>，前端靠它算每帧 duration 喂给 MSE。用大端是因为<br><code>jmuxer</code> 那边按大端解析，两边对齐即可，没有规定必须哪种。</p>
+<h3 id="6-3-死流自愈（一次真实的线上故障）"><a href="#6-3-死流自愈（一次真实的线上故障）" class="headerlink" title="6.3 死流自愈（一次真实的线上故障）"></a>6.3 死流自愈（一次真实的线上故障）</h3><p><strong>故障现象</strong>：ONVIF 摄像头（108）主码流打不开，子码流正常。刷新页面无效，<br>只能重启服务。</p>
+<p><strong>排查过程</strong>：</p>
+<ol>
+<li><code>ffprobe</code> 直连摄像头，主&#x2F;子码流都正常 → 排除摄像头</li>
+<li>板上 <code>gst-launch</code> 手动拉主码流，8 秒落了 4.0MB → 排除网络和管线参数</li>
+<li>板上二进制与虚拟机 <code>build-aarch64</code> <strong>MD5 完全一致</strong> → 排除版本不一致</li>
+<li>看 <code>/api/streams</code>，发现主码流 <code>subs=1</code> 但早就没画面 → <strong>死流卡在表里</strong></li>
+</ol>
+<p><strong>根因是两处代码配合出来的缺陷</strong>：</p>
+<figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// Stream::loop() —— 管线报错后只 break</span></span><br><span class="line"><span class="keyword">if</span> (<span class="built_in">GST_MESSAGE_TYPE</span>(m) == GST_MESSAGE_ERROR) &#123;</span><br><span class="line">    ...</span><br><span class="line">    <span class="keyword">break</span>;              <span class="comment">// running_ 还是 true，对象和 refs 都不清理</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="comment">// Hub::acquire() —— 只看 key 在不在</span></span><br><span class="line"><span class="keyword">if</span> (it != map_.<span class="built_in">end</span>()) &#123;</span><br><span class="line">    ++refs_[spec.key];</span><br><span class="line">    <span class="keyword">return</span> it-&gt;second;   <span class="comment">// 不检查这条流还活着没有</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>于是：<strong>主码流失败一次（摄像头忙、网络抖一下）→ 死流永久留在表里 → 后续所有<br>开播都复用它 → 永远没画面</strong>。子码流第一次就成功，所以一直正常。</p>
+<p>日志证据链：</p>
+<figure class="highlight less"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">行 <span class="number">5</span>  <span class="selector-attr">[stream]</span> 开播 .../<span class="selector-tag">main</span></span><br><span class="line">行 <span class="number">6</span>  <span class="selector-attr">[stream]</span> .../<span class="selector-tag">main</span> 管线错误: <span class="selector-tag">Could</span> <span class="selector-tag">not</span> <span class="selector-tag">open</span> <span class="selector-tag">resource</span> <span class="selector-tag">for</span> <span class="selector-tag">reading</span> <span class="selector-tag">and</span> <span class="selector-tag">writing</span>.</span><br><span class="line">行 <span class="number">7</span>  <span class="selector-attr">[stream]</span> 开播 .../<span class="selector-tag">main</span>          ← 复用死流，没有 <span class="selector-tag">init</span></span><br><span class="line">行 <span class="number">27</span> 之后十几个开播，全是复用，再也没出现过 <span class="selector-tag">init</span></span><br></pre></td></tr></table></figure>
+
+<p><strong>修复三处</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>改动</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>stream_hub.hpp</code></td>
+<td>新增 <code>dead_</code> + <code>alive()</code>；error &#x2F; EOS &#x2F; <strong>连续 30 秒无数据</strong> 都判死；<code>acquire()</code> 先摘后建；<code>release()</code> 加指针身份校验；新增 <code>notify_dead()</code></td>
+</tr>
+<tr>
+<td><code>stream_routes.hpp</code></td>
+<td><code>release(spec.key, st.get())</code> 带身份</td>
+</tr>
+<tr>
+<td><code>H264Player.vue</code></td>
+<td><code>onclose</code> 里补 <code>ws = null</code>（原来不清空，重连判断直接 return）</td>
+</tr>
+</tbody></table>
+<p><code>release</code> 加身份校验是为了防一个边界情况：老观众退出时，如果只是按 key 释放，<br>会把<strong>重建后的新流</strong>误杀。</p>
+<p><strong>验证方式</strong>：用 iptables 真的把网络切断 60 秒。</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">sudo</span> iptables -I OUTPUT -d 192.168.1.108 -j REJECT</span><br><span class="line"><span class="built_in">sudo</span> iptables -I INPUT  -s 192.168.1.108 -j REJECT</span><br></pre></td></tr></table></figure>
+
+<table>
+<thead>
+<tr>
+<th>轮次</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>try1</td>
+<td>正常 345 帧</td>
+</tr>
+<tr>
+<td>try2</td>
+<td>断网，0 帧</td>
+</tr>
+<tr>
+<td>try3–7</td>
+<td>服务端每次开播都<strong>真的重建管线</strong>（旧版只会复用死流）</td>
+</tr>
+<tr>
+<td>try8</td>
+<td><strong>网络恢复后自动出画，495 帧，1920×1080</strong></td>
+</tr>
+</tbody></table>
+<p>全程没重启服务。修复后连测 3 次都是 0.1 秒出 init、约 124 帧&#x2F;5 秒。</p>
+<hr>
+<h2 id="7-前端解码播放"><a href="#7-前端解码播放" class="headerlink" title="7. 前端解码播放"></a>7. 前端解码播放</h2><h3 id="7-1-MSE-还是-WebCodecs"><a href="#7-1-MSE-还是-WebCodecs" class="headerlink" title="7.1 MSE 还是 WebCodecs"></a>7.1 MSE 还是 WebCodecs</h3><p>组件同时支持两条路，<strong>默认 MSE</strong>：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>MSE（jmuxer）</th>
+<th>WebCodecs</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>需要安全上下文</td>
+<td>否</td>
+<td><strong>是</strong>（https 或 localhost）</td>
+</tr>
+<tr>
+<td>HTTP + IP 能播</td>
+<td>✅</td>
+<td>❌ <code>window.VideoDecoder</code> 直接不存在</td>
+</tr>
+<tr>
+<td>延迟</td>
+<td>0.4~0.5s</td>
+<td>0.2~0.3s</td>
+</tr>
+<tr>
+<td>兼容面</td>
+<td>宽</td>
+<td>窄</td>
+</tr>
+</tbody></table>
+<p>现场是 <code>http://192.168.1.232:8080</code> 访问，WebCodecs 根本不可用。踩过一次坑：<br>以为「浏览器不支持」，其实是访问方式的问题 —— 报错信息应该明确指向这一点：</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">return</span> <span class="variable language_">window</span>.<span class="property">isSecureContext</span></span><br><span class="line">  ? <span class="string">&#x27;当前浏览器不支持 WebCodecs，请用 Chrome/Edge 94+&#x27;</span></span><br><span class="line">  : <span class="string">&#x27;WebCodecs 需要 HTTPS 或 localhost 访问（当前是 HTTP + IP）。改用 MSE 模式即可&#x27;</span></span><br></pre></td></tr></table></figure>
+
+<p>MSE 这条路是把 Annex B 用 <code>jmuxer</code> 封成 fMP4 喂给 <code>&lt;video&gt;</code>：</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">muxer = <span class="keyword">new</span> <span class="title class_">JMuxer</span>(&#123;</span><br><span class="line">  <span class="attr">node</span>: videoRef.<span class="property">value</span>,</span><br><span class="line">  <span class="attr">mode</span>: <span class="string">&#x27;video&#x27;</span>,</span><br><span class="line">  <span class="attr">flushingTime</span>: <span class="number">0</span>,</span><br><span class="line">  <span class="attr">fps</span>: <span class="number">25</span>,</span><br><span class="line">  <span class="attr">debug</span>: <span class="literal">false</span>,</span><br><span class="line">&#125;)</span><br></pre></td></tr></table></figure>
+
+<p>有个竞态必须处理：<code>jmuxer</code> 的 <code>sourceopen</code> 是异步的，这时喂帧会被丢掉。<br>所以先攒在一个队列里，就绪后再冲刷：</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">let</span> mseReady = <span class="literal">false</span></span><br><span class="line"><span class="keyword">let</span> pendingFeed = []</span><br><span class="line"></span><br><span class="line"><span class="keyword">function</span> <span class="title function_">feed</span>(<span class="params">buf</span>) &#123;</span><br><span class="line">  <span class="keyword">if</span> (!mseReady) &#123; pendingFeed.<span class="title function_">push</span>(buf); <span class="keyword">return</span> &#125;</span><br><span class="line">  muxer.<span class="title function_">feed</span>(&#123; <span class="attr">video</span>: buf &#125;)</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h3 id="7-2-连接与重连"><a href="#7-2-连接与重连" class="headerlink" title="7.2 连接与重连"></a>7.2 连接与重连</h3><figure class="highlight js"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">function</span> <span class="title function_">scheduleRetry</span>(<span class="params"></span>) &#123;</span><br><span class="line">  <span class="built_in">clearTimeout</span>(retryTimer)</span><br><span class="line">  retryTimer = <span class="built_in">setTimeout</span>(<span class="function">() =&gt;</span> &#123; <span class="keyword">if</span> (!manualClose) <span class="title function_">connect</span>() &#125;, retryDelay)</span><br><span class="line">  retryDelay = <span class="title class_">Math</span>.<span class="title function_">min</span>(retryDelay * <span class="number">2</span>, <span class="number">8000</span>)   <span class="comment">// 1.5 → 3 → 6 → 8</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>退避是必要的 —— 服务端重建管线要几百毫秒，前端狂连会把线程池打满。</p>
+<p><strong>这里有个隐蔽 bug</strong>：<code>onclose</code> 里没把 <code>ws</code> 置空，而 <code>connect()</code> 开头有这么一段：</p>
+<figure class="highlight js"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">if</span> (currentUrl === url &amp;&amp; ws &amp;&amp; ws.<span class="property">readyState</span> &lt;= <span class="number">1</span>) <span class="keyword">return</span>   <span class="comment">// 同址且在连，跳过</span></span><br></pre></td></tr></table></figure>
+
+<p>断开后 <code>ws.readyState</code> 是 3，条件不成立本来没事，但如果重连途中再次触发<br><code>connect()</code>（<code>watch</code> 和 <code>onMounted</code> 会连触两次），就会拿到一个半死的 socket。<br>补上 <code>ws = null</code> 之后逻辑才真正干净。</p>
+<h3 id="7-3-状态机"><a href="#7-3-状态机" class="headerlink" title="7.3 状态机"></a>7.3 状态机</h3><figure class="highlight mipsasm"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">idle → connecting → <span class="keyword">waiting </span>→ playing</span><br><span class="line">              ↓         ↓        ↓</span><br><span class="line">           <span class="keyword">closed </span>← error ← ─ ─ ─┘</span><br></pre></td></tr></table></figure>
+
+<p><code>waiting</code> 这个状态是必要的 —— WS 连上了但首帧还没到（等 IDR），此时帧数还是 0。<br>UI 上显示「等待关键帧…」，比一直转圈有用得多。</p>
+<p>四个统计量实时更新在角标上，排障时不用开 devtools：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>帧数</td>
+<td>累计收到多少帧</td>
+</tr>
+<tr>
+<td>kbps</td>
+<td>实时码率</td>
+</tr>
+<tr>
+<td>分辨率</td>
+<td>来自 init 帧</td>
+</tr>
+<tr>
+<td>延迟</td>
+<td><code>now - pts</code></td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="8-踩坑清单"><a href="#8-踩坑清单" class="headerlink" title="8. 踩坑清单"></a>8. 踩坑清单</h2><table>
+<thead>
+<tr>
+<th>现象</th>
+<th>根因</th>
+<th>修法</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>调参数刷新又变回原值</td>
+<td><code>rkaiq_3A_server</code> 每帧覆盖 V4L2</td>
+<td><code>ae3a.sh off</code>，别 kill 3A</td>
+</tr>
+<tr>
+<td>kill 3A 后画面变黑白点阵</td>
+<td>ISP 状态污染</td>
+<td>只能重启板子</td>
+</tr>
+<tr>
+<td>画面一闪一闪</td>
+<td>50Hz 抗闪烁锁死曝光档位</td>
+<td>关 <code>antiFlicker_en</code></td>
+</tr>
+<tr>
+<td>帧率只有 19.5fps、花屏</td>
+<td>caps 没写宽高，出了 4K 但码率只有 2Mbps</td>
+<td>caps 补 width&#x2F;height + 提码率</td>
+</tr>
+<tr>
+<td>主码流永久打不开</td>
+<td>死流复用缺陷</td>
+<td><code>dead_</code> 判定 + <code>acquire()</code> 先摘后建</td>
+</tr>
+<tr>
+<td>连上了却一帧没有</td>
+<td>没 pop <code>GST_MESSAGE_ERROR</code></td>
+<td>主动取 bus 消息</td>
+</tr>
+<tr>
+<td>前端不自动重连</td>
+<td><code>onclose</code> 没置空 <code>ws</code></td>
+<td><code>ws = null</code></td>
+</tr>
+<tr>
+<td>服务调不通，报「未实现的服务」</td>
+<td>worker 的 <code>invoke()</code> 没写这个分支</td>
+<td>补分支 + 确认 <code>Registrar</code> 已注册</td>
+</tr>
+<tr>
+<td>服务直接 404</td>
+<td><code>tki_product_service</code> 没登记</td>
+<td>补物模型记录</td>
+</tr>
+<tr>
+<td>调通了但返回假数据</td>
+<td><code>impl_class</code> 没注册，走 mock 兜底</td>
+<td>检查静态 Registrar</td>
+</tr>
+<tr>
+<td>配了 <code>/dev/video23</code> 却不生效</td>
+<td><code>rtsp_path</code> 必须以 <code>/dev/</code> 开头，否则静默走默认节点</td>
+<td>检查字段前缀</td>
+</tr>
+<tr>
+<td>RTSP 报 461</td>
+<td>UDP 拉 1080p 丢包 &#x2F; 会话数超限</td>
+<td><code>protocols=tcp</code></td>
+</tr>
+<tr>
+<td><code>pkill -f &quot;device_platform 8080&quot;</code> 把自己杀了</td>
+<td>命令行含同字符串</td>
+<td>用 <code>pgrep -x device_platform</code></td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="9-排障手册"><a href="#9-排障手册" class="headerlink" title="9. 排障手册"></a>9. 排障手册</h2><figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># 当前有几条管线、各多少观众 —— 死流一眼看穿</span></span><br><span class="line">curl http://127.0.0.1:8080/api/streams</span><br><span class="line"></span><br><span class="line"><span class="comment"># sensor 探测是否成功</span></span><br><span class="line">dmesg | grep -iE <span class="string">&quot;ov1385|i2c.*ret\(-5\)&quot;</span></span><br><span class="line"><span class="keyword">for</span> f <span class="keyword">in</span> /sys/class/video4linux/v4l-subdev*/name; <span class="keyword">do</span> <span class="built_in">echo</span> <span class="string">&quot;<span class="subst">$(basename $(dirname $f)</span>) : <span class="subst">$(cat $f)</span>&quot;</span>; <span class="keyword">done</span></span><br><span class="line"></span><br><span class="line"><span class="comment"># V4L2 有哪些控件</span></span><br><span class="line">v4l2-ctl -d /dev/v4l-subdev5 --list-ctrls</span><br><span class="line"></span><br><span class="line"><span class="comment"># 实时盯曝光/增益是否在跳</span></span><br><span class="line"><span class="keyword">for</span> i <span class="keyword">in</span> $(<span class="built_in">seq</span> 1 20); <span class="keyword">do</span> v4l2-ctl -d /dev/v4l-subdev5 --get-ctrl exposure,analogue_gain; <span class="built_in">sleep</span> 1; <span class="keyword">done</span></span><br><span class="line"></span><br><span class="line"><span class="comment"># ISP 支持哪些分辨率</span></span><br><span class="line">v4l2-ctl -d /dev/video23 --try-fmt-video=width=1920,height=1080,pixelformat=NV12</span><br><span class="line"></span><br><span class="line"><span class="comment"># media 拓扑（确认 sensor 挂在哪条 ISP 上）</span></span><br><span class="line">media-ctl -d /dev/media3 -p</span><br><span class="line"></span><br><span class="line"><span class="comment"># 板端手动拉流（绕开应用，验证能力）</span></span><br><span class="line">gst-launch-1.0 rtspsrc location=<span class="string">&quot;rtsp://...&quot;</span> protocols=tcp latency=200 \</span><br><span class="line">  ! application/x-rtp,media=video ! rtph264depay ! h264parse ! fakesink</span><br><span class="line"></span><br><span class="line"><span class="comment"># 量化亮度波动</span></span><br><span class="line">ffmpeg -i cap.h264 -vf <span class="string">&quot;scale=480:-2,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=y.txt&quot;</span> -f null -</span><br></pre></td></tr></table></figure>
+
+<hr>
+<h2 id="10-小结"><a href="#10-小结" class="headerlink" title="10. 小结"></a>10. 小结</h2><p>这套链路的核心设计取舍：</p>
+<ol>
+<li><strong>一个 key 一条管线</strong> —— 用引用计数换摄像头并发会话，代价是必须处理死流</li>
+<li><strong>caps 是协商不是命令</strong> —— 所以永远要回读实际值，不能信配置</li>
+<li><strong>ISP 参数走 REST、视频走 WS</strong> —— 互不阻塞，但也不会互相通知</li>
+<li><strong>默认 MSE 不用 WebCodecs</strong> —— 牺牲 0.2 秒延迟换 HTTP 环境可用性</li>
+<li><strong>unsupported 要显式返回</strong> —— 比返回假值让用户白调半天强</li>
+</ol>
+<p>最值得记住的一条：<strong>静默失败是最贵的失败</strong>。管线错误不 pop、<code>impl_class</code> 配错<br>走 mock、<code>onclose</code> 不置空 —— 这三个 bug 的共同点都是「看起来一切正常，就是没画面」，<br>每一个都花了大半天才定位到。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidekXTydnifUhWInEbFmW4W" data-title="从摄像头到网页：一次完整的视频链路拆解" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/WebSocket/" rel="tag">WebSocket</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" rel="tag">视频链路</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
+
+    </footer>
+  </div>
+  
+</article>
+
+
+
+  
     <article id="post-2026-11-02-照片型PDF翻译器实战" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
   <div class="article-meta">
     <a href="/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" class="article-date">
@@ -205,7 +757,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" data-id="cuidtX2YoRu9ApQylAN0XineO" data-title="我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" data-id="cuidWhviNhjyDegVLONtxToNA" data-title="我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -239,7 +791,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">标签</h3>
     <div class="widget">
-      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/WebSocket/" rel="tag">WebSocket</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" rel="tag">视频链路</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
     </div>
   </div>
 
@@ -249,7 +801,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">标签云</h3>
     <div class="widget tagcloud">
-      <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 10px;">调试复盘</a>
+      <a href="/tags/GStreamer/" style="font-size: 10px;">GStreamer</a> <a href="/tags/ISP/" style="font-size: 10px;">ISP</a> <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/RV1126B/" style="font-size: 10px;">RV1126B</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" style="font-size: 10px;">视频链路</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 20px;">调试复盘</a>
     </div>
   </div>
 
@@ -269,6 +821,10 @@
     <h3 class="widget-title">最新文章</h3>
     <div class="widget">
       <ul>
+        
+          <li>
+            <a href="/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/">从摄像头到网页：一次完整的视频链路拆解</a>
+          </li>
         
           <li>
             <a href="/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/">我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）</a>
