@@ -77,6 +77,560 @@
       <div class="outer">
         <section id="main">
   
+    <article id="post-2026-11-07-搞不清V4L2-GStreamer-appsink-一篇讲透" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/" class="article-date">
+  <time class="dt-published" datetime="2026-11-07T03:15:09.000Z" itemprop="datePublished">2026-11-07</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/">技术笔记</a>
+  </div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 itemprop="name">
+      <a class="p-name article-title" href="/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/">搞不清 V4L2、GStreamer、appsink？一篇讲透</a>
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <blockquote>
+<p>写给刚接手摄像头项目的人。<br>这三个词经常被并列提起，但它们根本不在一个层次上——<strong>V4L2 是内核接口，GStreamer 是用户态框架，appsink 是框架里的一个零件</strong>。<br>把它们混着理解，看代码就会一直有”这仨到底谁管谁”的困惑。</p>
+</blockquote>
+<hr>
+<h2 id="0-先看一张图"><a href="#0-先看一张图" class="headerlink" title="0. 先看一张图"></a>0. 先看一张图</h2><figure class="highlight dart"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br></pre></td><td class="code"><pre><span class="line">┌─────────────────────────────────────────────┐</span><br><span class="line">│  你的程序                                    │</span><br><span class="line">│  <span class="title function_">on_sample</span>() 拿到一帧 <span class="title class_">NV12</span>，爱干嘛干嘛        │</span><br><span class="line">└───────────────────▲─────────────────────────┘</span><br><span class="line">                    │ <span class="title function_">pull_sample</span>()</span><br><span class="line">┌───────────────────┴─────────────────────────┐</span><br><span class="line">│  <span class="title class_">GStreamer</span> 管线（用户态，一个进程内）          │</span><br><span class="line">│                                             │</span><br><span class="line">│  v4l2src ─→ videoconvert ─→ mpph264enc ─→ appsink │</span><br><span class="line">│     │                                       │</span><br><span class="line">│     └─ 这是 <span class="title class_">GStreamer</span> 和 <span class="title class_">V4L2</span> 的交界点        │</span><br><span class="line">└───────────────────▲─────────────────────────┘</span><br><span class="line">                    │ <span class="title function_">ioctl</span>(VIDIOC_DQBUF)</span><br><span class="line">┌───────────────────┴─────────────────────────┐</span><br><span class="line">│  内核 <span class="title class_">V4L2</span> 子系统                             │</span><br><span class="line">│  /dev/video23 · ov13855.ko · 驱动层           │</span><br><span class="line">└─────────────────────────────────────────────┘</span><br></pre></td></tr></table></figure>
+
+<p><strong>越往上越方便，也越多一层。</strong> 越往下越直接，也越要自己动手。</p>
+<hr>
+<h2 id="1-V4L2：内核定的接口标准"><a href="#1-V4L2：内核定的接口标准" class="headerlink" title="1. V4L2：内核定的接口标准"></a>1. V4L2：内核定的接口标准</h2><h3 id="1-1-它到底是什么"><a href="#1-1-它到底是什么" class="headerlink" title="1.1 它到底是什么"></a>1.1 它到底是什么</h3><p>V4L2 &#x3D; <strong>Video for Linux 2</strong>。它不是库，不是框架，<strong>是 Linux 内核里的一层约定</strong>。</p>
+<p>这层约定规定了两件事：</p>
+<ol>
+<li>摄像头驱动必须把硬件能力”登记”成 <code>/dev/videoX</code> 这样的字符设备</li>
+<li>用户态只能通过 <strong>ioctl</strong> 跟它说话</li>
+</ol>
+<p>所以严格来说，”用 V4L2”&#x3D; “对着 <code>/dev/videoX</code> 调一堆 ioctl”。没有别的方式。</p>
+<h3 id="1-2-五个-ioctl-就是全部骨架"><a href="#1-2-五个-ioctl-就是全部骨架" class="headerlink" title="1.2 五个 ioctl 就是全部骨架"></a>1.2 五个 ioctl 就是全部骨架</h3><p>任何 V4L2 采集程序，无论多复杂，都是这五步：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br></pre></td><td class="code"><pre><span class="line"><span class="type">int</span> fd = open(<span class="string">&quot;/dev/video23&quot;</span>, O_RDWR);</span><br><span class="line"></span><br><span class="line"><span class="comment">/* ① 问能力：这个节点是出画面的还是收参数的 */</span></span><br><span class="line">ioctl(fd, VIDIOC_QUERYCAP, &amp;cap);</span><br><span class="line"></span><br><span class="line"><span class="comment">/* ② 协商格式：告诉驱动我要 2112x1568 NV12，然后回读它给的是什么 */</span></span><br><span class="line">ioctl(fd, VIDIOC_S_FMT, &amp;fmt);</span><br><span class="line">ioctl(fd, VIDIOC_G_FMT, &amp;fmt);      <span class="comment">/* 必须回读！见下方说明 */</span></span><br><span class="line"></span><br><span class="line"><span class="comment">/* ③ 申请缓冲区 */</span></span><br><span class="line">ioctl(fd, VIDIOC_REQBUFS, &amp;rb);</span><br><span class="line"></span><br><span class="line"><span class="comment">/* ④ 把缓冲区映射到用户态，再全部还给驱动 */</span></span><br><span class="line"><span class="keyword">for</span> (i = <span class="number">0</span>; i &lt; rb.count; i++) &#123;</span><br><span class="line">    ioctl(fd, VIDIOC_QUERYBUF, &amp;buf[i]);</span><br><span class="line">    mmap(...);</span><br><span class="line">    ioctl(fd, VIDIOC_QBUF, &amp;buf[i]);</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="comment">/* ⑤ 开流，然后死循环：取帧 → 用帧 → 还帧 */</span></span><br><span class="line">ioctl(fd, VIDIOC_STREAMON, &amp;type);</span><br><span class="line"><span class="keyword">while</span> (running) &#123;</span><br><span class="line">    ioctl(fd, VIDIOC_DQBUF, &amp;buf);    <span class="comment">/* 取一帧（阻塞直到有数据） */</span></span><br><span class="line">    do_something(buf);                <span class="comment">/* 你的处理 */</span></span><br><span class="line">    ioctl(fd, VIDIOC_QBUF,  &amp;buf);    <span class="comment">/* 还回去，不然驱动就没缓冲了 */</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>这五步在真机上跑起来大概 <strong>不到 200 行 C</strong>。完整可编译版本见另一篇《摄像头开发入门》的 5.3 节。</p>
+<h3 id="1-3-它不负责什么"><a href="#1-3-它不负责什么" class="headerlink" title="1.3 它不负责什么"></a>1.3 它不负责什么</h3><p>这是新人最容易误会的地方。V4L2 <strong>不做</strong>下面这些事：</p>
+<table>
+<thead>
+<tr>
+<th>你可能以为它做</th>
+<th>实际上</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>转格式（NV12 → RGB）</td>
+<td>不做。要么驱动支持你要的格式，要么你自己转</td>
+</tr>
+<tr>
+<td>缩放</td>
+<td>只有 ISP&#x2F;VPSS 这类硬件节点支持，是硬件能力不是 V4L2 的能力</td>
+</tr>
+<tr>
+<td>编码（H.264）</td>
+<td><strong>完全不做</strong>。要另外调 MPP &#x2F; x264 &#x2F; 硬件编码器</td>
+</tr>
+<tr>
+<td>推流</td>
+<td>不做。RTSP&#x2F;WebSocket 全是上层的事</td>
+</tr>
+<tr>
+<td>多人共享一路流</td>
+<td>不做。<strong>硬件独占</strong>，一个节点同时只能一个进程开流</td>
+</tr>
+</tbody></table>
+<p>所以它是个很”薄”的层：<strong>负责搬像素，别的都不管</strong>。</p>
+<h3 id="1-4-怎么确认它在工作"><a href="#1-4-怎么确认它在工作" class="headerlink" title="1.4 怎么确认它在工作"></a>1.4 怎么确认它在工作</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># 这个节点是不是画面通道</span></span><br><span class="line">v4l2-ctl -d /dev/video23 --info        <span class="comment"># 看有没有 Video Capture</span></span><br><span class="line"></span><br><span class="line"><span class="comment"># 协商有没有真的生效</span></span><br><span class="line">v4l2-ctl -d /dev/video23 --get-fmt-video</span><br><span class="line"></span><br><span class="line"><span class="comment"># 抓 10 帧验证</span></span><br><span class="line">gst-launch-1.0 -q v4l2src device=/dev/video23 num-buffers=10 io-mode=4 \</span><br><span class="line">  ! video/x-raw,format=NV12,width=2112,height=1568 ! filesink location=/tmp/t.nv12</span><br><span class="line"><span class="built_in">ls</span> -l /tmp/t.nv12     <span class="comment"># 应该等于 2112 × 1568 × 1.5 × 10 = 49674240</span></span><br></pre></td></tr></table></figure>
+
+<blockquote>
+<p>一条铁律：<strong><code>S_FMT</code> 几乎永远返回成功</strong>。驱动满足不了你的要求时，会”悄悄改成它能做的”然后照样返回 0。<br>所以设完必须 <code>G_FMT</code> 回读，而且最终要靠实际出图来判断——文件大小、画面比例，骗不了人。</p>
+</blockquote>
+<hr>
+<h2 id="2-GStreamer：把-ioctl-包装成流水线"><a href="#2-GStreamer：把-ioctl-包装成流水线" class="headerlink" title="2. GStreamer：把 ioctl 包装成流水线"></a>2. GStreamer：把 ioctl 包装成流水线</h2><h3 id="2-1-element-和-pipeline"><a href="#2-1-element-和-pipeline" class="headerlink" title="2.1 element 和 pipeline"></a>2.1 element 和 pipeline</h3><p>GStreamer 的世界只有两个概念：</p>
+<ul>
+<li><strong>element（元素）</strong>：一个能干一件事的零件。取帧的、转格式的、编码的、写文件的</li>
+<li><strong>pipeline（管线）</strong>：把零件用 <code>!</code> 串起来的一条链</li>
+</ul>
+<p>一条链就是一句命令行：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">gst-launch-1.0 v4l2src device=/dev/video23 io-mode=4 ! \</span><br><span class="line">  video/x-raw,format=NV12,width=2112,height=1568,framerate=30/1 ! \</span><br><span class="line">  mpph264enc rc-mode=1 bps=4000000 gop=30 ! \</span><br><span class="line">  h264parse ! filesink location=/tmp/a.h264</span><br></pre></td></tr></table></figure>
+
+<p>每个 <code>!</code> 就是一次”握手”：前一个元素问后一个”你能吃我这个格式吗”，能吃就传，不能吃就报 <code>not-negotiated</code>。</p>
+<p>本机（GStreamer 1.24.11）装好的 element 有 500 多个，<code>gst-inspect-1.0 | head</code> 就能看。<strong>你只需要认识五六个</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>element</th>
+<th>干什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>v4l2src</code></td>
+<td>从 <code>/dev/videoX</code> 取帧</td>
+</tr>
+<tr>
+<td><code>videoconvert</code></td>
+<td>像素格式转换（NV12 ↔ RGB ↔ YUYV）</td>
+</tr>
+<tr>
+<td><code>videoscale</code></td>
+<td>缩放</td>
+</tr>
+<tr>
+<td><code>mpph264enc</code></td>
+<td>Rockchip 硬件 H.264 编码</td>
+</tr>
+<tr>
+<td><code>h264parse</code></td>
+<td>规整 H.264 裸流（补 SPS&#x2F;PPS、对齐 NAL）</td>
+</tr>
+<tr>
+<td><code>appsink</code></td>
+<td>把数据交回你的代码</td>
+</tr>
+</tbody></table>
+<h3 id="2-2-v4l2src-是交界点"><a href="#2-2-v4l2src-是交界点" class="headerlink" title="2.2 v4l2src 是交界点"></a>2.2 <code>v4l2src</code> 是交界点</h3><p>理解这三个词的关键就在这一个 element。</p>
+<p><code>v4l2src</code> <strong>是 GStreamer 的零件，但内部实现就是调 V4L2 的那五个 ioctl</strong>。它把”打开设备、协商格式、申请缓冲、开流、取帧”这些事全替你做了。</p>
+<p>所以：</p>
+<blockquote>
+<p><strong>GStreamer 没有替代 V4L2，它只是替你写好了调用 V4L2 的代码。</strong></p>
+</blockquote>
+<p><code>v4l2src</code> 会用默认参数打开设备——如果你不写 <code>video/x-raw,...</code> 那一段 caps，它就会拿驱动给的默认值（本机是 3840×2160），然后你发现画面不对，还以为是编码器的锅。</p>
+<h3 id="2-3-一条真实命令，逐段拆"><a href="#2-3-一条真实命令，逐段拆" class="headerlink" title="2.3 一条真实命令，逐段拆"></a>2.3 一条真实命令，逐段拆</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">gst-launch-1.0 -q v4l2src device=/dev/video23 num-buffers=30 io-mode=4 \</span><br><span class="line">  ! video/x-raw,format=NV12,width=2112,height=1568,framerate=30/1 \</span><br><span class="line">  ! mpph264enc rc-mode=1 bps=4000000 gop=30 \</span><br><span class="line">  ! h264parse ! filesink location=/tmp/t30.h264</span><br></pre></td></tr></table></figure>
+
+<table>
+<thead>
+<tr>
+<th>片段</th>
+<th>作用</th>
+<th>不写会怎样</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>device=/dev/video23</code></td>
+<td>用哪个节点</td>
+<td>用第一个能用的，可能不是你想要的</td>
+</tr>
+<tr>
+<td><code>io-mode=4</code></td>
+<td>DMA 直通（零拷贝）</td>
+<td>多一次内存拷贝，30fps 以上容易掉帧</td>
+</tr>
+<tr>
+<td><code>num-buffers=30</code></td>
+<td>抓 30 帧就停</td>
+<td>一直跑，要手动 Ctrl-C</td>
+</tr>
+<tr>
+<td><code>video/x-raw,...</code></td>
+<td><strong>协商参数</strong></td>
+<td>拿驱动默认 3840×2160</td>
+</tr>
+<tr>
+<td><code>mpph264enc</code></td>
+<td>硬件编码</td>
+<td>出来的是 4.7MB&#x2F;帧的裸 NV12</td>
+</tr>
+<tr>
+<td><code>rc-mode=1 bps=...</code></td>
+<td>CBR 4Mbps</td>
+<td>默认 VBR，码率乱跳</td>
+</tr>
+<tr>
+<td><code>gop=30</code></td>
+<td>1 秒一个 I 帧</td>
+<td>首屏慢、丢包恢复慢</td>
+</tr>
+<tr>
+<td><code>h264parse</code></td>
+<td>补 SPS&#x2F;PPS</td>
+<td>前端可能解不出来</td>
+</tr>
+</tbody></table>
+<p>实测产物：30 帧 <strong>382,205 字节 ≈ 3.06 Mbps</strong>，开头是 <code>00 00 00 01 09 f0 ... 00 00 00 01 67 64 00 32</code>（AUD + SPS）。</p>
+<h3 id="2-4-它替你做了什么，代价是什么"><a href="#2-4-它替你做了什么，代价是什么" class="headerlink" title="2.4 它替你做了什么，代价是什么"></a>2.4 它替你做了什么，代价是什么</h3><p><strong>白拿的好处：</strong></p>
+<ul>
+<li>格式协商全自动（不用自己写 <code>S_FMT</code> + 回读的逻辑）</li>
+<li>现成的硬件编码、封装、推流零件</li>
+<li>换个平台（从 RK 换成别的 SoC）可能只改一个 element 名字</li>
+<li>调试手段多：<code>GST_DEBUG=3</code> 能打出协商全过程</li>
+</ul>
+<p><strong>要付的代价：</strong></p>
+<table>
+<thead>
+<tr>
+<th>代价</th>
+<th>量级</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>库体积</td>
+<td>本机 <code>/usr/lib/gstreamer-1.0</code> 占 <strong>8.9 MB</strong></td>
+<td>嵌入式板子要算这笔账</td>
+</tr>
+<tr>
+<td>一层缓冲</td>
+<td>通常多 1~3 帧延迟</td>
+<td>对延迟敏感的场景要调 <code>max-buffers</code> &#x2F; <code>drop</code></td>
+</tr>
+<tr>
+<td>调试变绕</td>
+<td>出错信息是”管线内部”的</td>
+<td><code>not-negotiated</code> 这种报错对新人很不友好</td>
+</tr>
+<tr>
+<td>依赖版本</td>
+<td>插件名、参数名随版本变</td>
+<td>1.24 的 <code>rc-mode</code>，老版本可能叫 <code>rc_mode</code></td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="3-appsink：从管线里把数据抢回来"><a href="#3-appsink：从管线里把数据抢回来" class="headerlink" title="3. appsink：从管线里把数据抢回来"></a>3. appsink：从管线里把数据抢回来</h2><h3 id="3-1-sink-家族：数据去哪"><a href="#3-1-sink-家族：数据去哪" class="headerlink" title="3.1 sink 家族：数据去哪"></a>3.1 sink 家族：数据去哪</h3><p>GStreamer 的管线末端必须有一个 <strong>sink</strong>（水槽），它决定数据的最终归宿：</p>
+<table>
+<thead>
+<tr>
+<th>sink</th>
+<th>数据去哪</th>
+<th>典型用途</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>filesink</code></td>
+<td>写文件</td>
+<td>存录像、抓裸流分析</td>
+</tr>
+<tr>
+<td><code>fakesink</code></td>
+<td>直接丢弃</td>
+<td>只测吞吐、压测</td>
+</tr>
+<tr>
+<td><code>autovideosink</code></td>
+<td>显示到屏幕</td>
+<td>桌面调试</td>
+</tr>
+<tr>
+<td><code>rtspclientsink</code></td>
+<td>推 RTSP</td>
+<td>转成网络流</td>
+</tr>
+<tr>
+<td><strong><code>appsink</code></strong></td>
+<td><strong>交回你的代码</strong></td>
+<td><strong>要自己处理每一帧</strong></td>
+</tr>
+</tbody></table>
+<p>所以 <code>appsink</code> 的定位是：<strong>你已经用上了 GStreamer 的便利（自动协商、硬件编码），但最后一公里要自己走</strong>。</p>
+<h3 id="3-2-三个调用就够"><a href="#3-2-三个调用就够" class="headerlink" title="3.2 三个调用就够"></a>3.2 三个调用就够</h3><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&lt;gst/gst.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&lt;gst/app/gstappsink.h&gt;</span></span></span><br><span class="line"></span><br><span class="line">GstElement *pipe = gst_parse_launch(</span><br><span class="line">    <span class="string">&quot;v4l2src device=/dev/video23 io-mode=4 &quot;</span></span><br><span class="line">    <span class="string">&quot;! video/x-raw,format=NV12,width=2112,height=1568,framerate=30/1 &quot;</span></span><br><span class="line">    <span class="string">&quot;! appsink name=sink emit-signals=true max-buffers=2 drop=true sync=false&quot;</span>,</span><br><span class="line">    <span class="literal">NULL</span>);</span><br><span class="line"></span><br><span class="line">GstElement *sink = gst_bin_get_by_name(GST_BIN(pipe), <span class="string">&quot;sink&quot;</span>);</span><br><span class="line">g_signal_connect(sink, <span class="string">&quot;new-sample&quot;</span>, G_CALLBACK(on_sample), my_ctx);</span><br><span class="line">gst_element_set_state(pipe, GST_STATE_PLAYING);</span><br><span class="line"></span><br><span class="line"><span class="comment">/* 每来一帧，GStreamer 在它自己的线程里回调你 */</span></span><br><span class="line"><span class="type">static</span> GstFlowReturn <span class="title function_">on_sample</span><span class="params">(GstAppSink *sink, gpointer user)</span> &#123;</span><br><span class="line">    GstSample *s = gst_app_sink_pull_sample(sink);</span><br><span class="line">    <span class="keyword">if</span> (!s) <span class="keyword">return</span> GST_FLOW_EOS;</span><br><span class="line"></span><br><span class="line">    GstBuffer *buf = gst_sample_get_buffer(s);</span><br><span class="line">    GstMapInfo <span class="built_in">map</span>;</span><br><span class="line">    gst_buffer_map(buf, &amp;<span class="built_in">map</span>, GST_MAP_READ);</span><br><span class="line">    <span class="comment">/* map.data 是 NV12 数据，map.size 是字节数 —— 可以当&quot;这一帧&quot;用 */</span></span><br><span class="line">    handle_frame(<span class="built_in">map</span>.data, <span class="built_in">map</span>.size);</span><br><span class="line">    gst_buffer_unmap(buf, &amp;<span class="built_in">map</span>);</span><br><span class="line"></span><br><span class="line">    gst_sample_unref(s);        <span class="comment">/* ★ 必须 unref，否则内存一直涨 */</span></span><br><span class="line">    <span class="keyword">return</span> GST_FLOW_OK;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>编译（板子上没有 gcc，要在交叉工具链里编）：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="variable">$CC</span> grab.c -o grab $(pkg-config --cflags --libs gstreamer-app-1.0)</span><br></pre></td></tr></table></figure>
+
+<h3 id="3-3-三个参数别省"><a href="#3-3-三个参数别省" class="headerlink" title="3.3 三个参数别省"></a>3.3 三个参数别省</h3><figure class="highlight freedesktop"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="attr">max-buffers</span><span class="operator">=</span>2  drop<span class="operator">=</span><span class="literal">true</span>  sync<span class="operator">=</span><span class="literal">false</span></span><br></pre></td></tr></table></figure>
+
+<ul>
+<li><strong><code>drop=true</code></strong>：处理不过来时丢<strong>最旧</strong>的帧。视频场景宁可丢帧，也不能让延迟越积越大</li>
+<li><strong><code>max-buffers=2</code></strong>：队列最多存 2 帧，配合 <code>drop</code> 生效</li>
+<li><strong><code>sync=false</code></strong>：不按时间戳限速。不加的话，你的处理节奏会被”墙钟”卡住</li>
+</ul>
+<p>去掉这三个，跑十分钟你可能会看到延迟从 100ms 涨到 10 秒——因为队列在悄悄堆积。</p>
+<h3 id="3-4-两个必须知道的坑"><a href="#3-4-两个必须知道的坑" class="headerlink" title="3.4 两个必须知道的坑"></a>3.4 两个必须知道的坑</h3><p><strong>坑一：不要在回调里做耗时操作。</strong></p>
+<p><code>on_sample</code> 是在 GStreamer 的 <strong>streaming 线程</strong>里被调用的。你在这儿 sleep 500ms，整条管线就被拖慢 500ms，上游开始丢帧、buffer 堆积。</p>
+<p>正确做法：回调里只做”拷一份 &#x2F; 塞进无锁队列”，真正的处理放到自己的线程：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line"><span class="type">static</span> GstFlowReturn <span class="title function_">on_sample</span><span class="params">(GstAppSink *sink, gpointer user)</span> &#123;</span><br><span class="line">    GstSample *s = gst_app_sink_pull_sample(sink);</span><br><span class="line">    <span class="comment">/* 只做一件事：放进队列就返回 */</span></span><br><span class="line">    queue_push_copy(s);</span><br><span class="line">    gst_sample_unref(s);</span><br><span class="line">    <span class="keyword">return</span> GST_FLOW_OK;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p><strong>坑二：<code>map.data</code> 用完就没了。</strong></p>
+<p><code>gst_sample_unref(s)</code> 之后，那块内存会被 GStreamer 回收复用。<strong>千万别把 <code>map.data</code> 的指针存起来以后再用</strong>——那是野指针，表现是画面突然花屏或者进程莫名崩溃。</p>
+<p>要长期持有，必须自己 <code>memcpy</code> 一份，或者 <code>gst_buffer_ref</code> 把引用计数加上。</p>
+<h3 id="3-5-和裸-V4L2-的一个本质差别：谁管缓冲"><a href="#3-5-和裸-V4L2-的一个本质差别：谁管缓冲" class="headerlink" title="3.5 和裸 V4L2 的一个本质差别：谁管缓冲"></a>3.5 和裸 V4L2 的一个本质差别：谁管缓冲</h3><table>
+<thead>
+<tr>
+<th></th>
+<th>裸 V4L2</th>
+<th>appsink</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>谁分配 buffer</td>
+<td>你 <code>REQBUFS</code></td>
+<td>GStreamer</td>
+</tr>
+<tr>
+<td>内存地址</td>
+<td>固定（<code>mmap</code> 出来的，一直不变）</td>
+<td>每帧可能不同</td>
+</tr>
+<tr>
+<td>用完要做什么</td>
+<td><code>QBUF</code> 还回去</td>
+<td><code>unref</code> 减引用</td>
+</tr>
+<tr>
+<td>零拷贝</td>
+<td>是（直接读 mmap 地址）</td>
+<td>取决于上游是否 DMABUF</td>
+</tr>
+<tr>
+<td>存指针安全吗</td>
+<td>安全（地址不变，内容会被覆盖）</td>
+<td><strong>不安全</strong>（unref 后失效）</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="4-两条路，怎么选"><a href="#4-两条路，怎么选" class="headerlink" title="4. 两条路，怎么选"></a>4. 两条路，怎么选</h2><h3 id="4-1-对照表"><a href="#4-1-对照表" class="headerlink" title="4.1 对照表"></a>4.1 对照表</h3><table>
+<thead>
+<tr>
+<th>维度</th>
+<th>裸 V4L2</th>
+<th>GStreamer + appsink</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>代码量</td>
+<td>约 200 行</td>
+<td>约 40 行</td>
+</tr>
+<tr>
+<td>依赖</td>
+<td>只要 libc</td>
+<td>GStreamer 库（8.9 MB）</td>
+</tr>
+<tr>
+<td>格式协商</td>
+<td>自己写 + 回读</td>
+<td>自动</td>
+</tr>
+<tr>
+<td>硬件编码</td>
+<td>要自己接 MPP API</td>
+<td><code>mpph264enc</code> 一行</td>
+</tr>
+<tr>
+<td>缓冲控制</td>
+<td>完全可控</td>
+<td>受框架约束</td>
+</tr>
+<tr>
+<td>延迟</td>
+<td>最低</td>
+<td>多 1~3 帧</td>
+</tr>
+<tr>
+<td>跨平台迁移</td>
+<td>每个 SoC 重写</td>
+<td>换 element 名</td>
+</tr>
+<tr>
+<td>出错排查</td>
+<td>报错明确（errno）</td>
+<td><code>not-negotiated</code> 之类，要开 <code>GST_DEBUG</code></td>
+</tr>
+<tr>
+<td>适合</td>
+<td>产品级、延迟敏感、内存紧张</td>
+<td>快速验证、要现成编码、逻辑复杂</td>
+</tr>
+</tbody></table>
+<h3 id="4-2-决策树"><a href="#4-2-决策树" class="headerlink" title="4.2 决策树"></a>4.2 决策树</h3><figure class="highlight dart"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line">你要做什么？</span><br><span class="line">├─ 只是想确认<span class="string">&quot;摄像头能不能出画面&quot;</span></span><br><span class="line">│   └─ gst-launch-<span class="number">1.0</span> 一行命令（不用写代码）</span><br><span class="line">├─ 要录文件 / 推 RTSP</span><br><span class="line">│   └─ <span class="title class_">GStreamer</span> + filesink / rtspclientsink</span><br><span class="line">├─ 要自己处理每一帧（算亮度、跑算法、塞进 <span class="title class_">WebSocket</span>）</span><br><span class="line">│   ├─ 板子内存够、想快点出活 → <span class="title class_">GStreamer</span> + appsink</span><br><span class="line">│   └─ 要极致延迟、不想背包 → 裸 <span class="title class_">V4L2</span></span><br><span class="line">└─ 要精确控制 buffer 和 mmap</span><br><span class="line">    └─ 裸 <span class="title class_">V4L2</span></span><br></pre></td></tr></table></figure>
+
+<h3 id="4-3-一个实战建议"><a href="#4-3-一个实战建议" class="headerlink" title="4.3 一个实战建议"></a>4.3 一个实战建议</h3><p><strong>先用 GStreamer 跑通链路，再按需下沉到 V4L2。</strong></p>
+<p>原因很实际：参数（分辨率、格式、io-mode、码率）错了的时候，</p>
+<ul>
+<li>用 GStreamer：你改一个 caps 字符串，立刻能对照结果，<strong>参数问题一目了然</strong></li>
+<li>用裸 V4L2：你要怀疑自己的 200 行代码，到底是协商没生效、还是 mmap 错了、还是 QBUF 漏了</li>
+</ul>
+<p>先排除参数问题，再怀疑代码。顺序反了会浪费很多时间。</p>
+<hr>
+<h2 id="5-五个常见误解"><a href="#5-五个常见误解" class="headerlink" title="5. 五个常见误解"></a>5. 五个常见误解</h2><p><strong>误解一：”GStreamer 是 V4L2 的新版本&#x2F;替代品”</strong></p>
+<p>不是。V4L2 在内核，GStreamer 在用户态，两者是上下层关系。GStreamer 里的 <code>v4l2src</code> 就是 V4L2 的调用者。</p>
+<p><strong>误解二：”appsink 是采集设备”</strong></p>
+<p><code>appsink</code> 是<strong>输出端</strong>，不是输入端。采集在 <code>v4l2src</code> 那一头。名字里的 “sink”（水槽）就是在说”数据的终点”。</p>
+<p><strong>误解三：”用了 GStreamer 就不用管 V4L2 了”</strong></p>
+<p><code>v4l2src</code> 的很多参数（<code>device</code>、<code>io-mode</code>）都是直接映射到 V4L2 的。不理解 V4L2 就调不好这些参数。而且设备被占用（<code>Device or resource busy</code>）这种问题，跟你用不用框架无关。</p>
+<p><strong>误解四：”appsink 拿到的帧可以直接留着”</strong></p>
+<p>不能。<code>unref</code> 之后内存就被回收了。要留必须 <code>memcpy</code> 或 <code>gst_buffer_ref</code>。</p>
+<p><strong>误解五：”管线越长功能越强”</strong></p>
+<p>每加一个 element 就多一层缓冲、多一次协商。<code>videoconvert</code> 插错位置会引入一次 CPU 全帧拷贝，2112×1568 下这一下就能吃掉 20% CPU。<strong>能不加就不加。</strong></p>
+<hr>
+<h2 id="6-针对这三个词的排错"><a href="#6-针对这三个词的排错" class="headerlink" title="6. 针对这三个词的排错"></a>6. 针对这三个词的排错</h2><table>
+<thead>
+<tr>
+<th>现象</th>
+<th>是哪个层的问题</th>
+<th>怎么定位</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Device or resource busy</code></td>
+<td>V4L2（硬件独占）</td>
+<td><code>fuser /dev/video23</code> 找占用进程</td>
+</tr>
+<tr>
+<td><code>Inappropriate ioctl for device</code></td>
+<td>V4L2（用错节点）</td>
+<td><code>v4l2-ctl -d &lt;dev&gt; --info</code> 看有没有 <code>Video Capture</code></td>
+</tr>
+<tr>
+<td>画面比例不对 &#x2F; 被拉扁</td>
+<td>V4L2 协商（caps 没写或写错）</td>
+<td>加 <code>video/x-raw,width=...,height=...</code></td>
+</tr>
+<tr>
+<td><code>not-negotiated (-4)</code></td>
+<td>GStreamer（上下游格式不匹配）</td>
+<td><code>GST_DEBUG=3</code> 看协商过程，或中间插 <code>videoconvert</code></td>
+</tr>
+<tr>
+<td><code>no element &quot;mpph264enc&quot;</code></td>
+<td>GStreamer（插件没装）</td>
+<td><code>gst-inspect-1.0 | grep mpp</code></td>
+</tr>
+<tr>
+<td>延迟越跑越大</td>
+<td>appsink（没设 drop &#x2F; 回调太慢）</td>
+<td>加 <code>max-buffers=2 drop=true</code>，回调里别做重活</td>
+</tr>
+<tr>
+<td>跑一会儿花屏 &#x2F; 崩溃</td>
+<td>appsink（存了野指针）</td>
+<td>检查有没有 <code>memcpy</code> 或 <code>gst_buffer_ref</code></td>
+</tr>
+<tr>
+<td>内存持续上涨</td>
+<td>appsink（忘了 unref）</td>
+<td>每个 <code>pull_sample</code> 必须配一个 <code>unref</code></td>
+</tr>
+<tr>
+<td>帧率只有一半</td>
+<td>V4L2（<code>io-mode</code> 不对，多了拷贝）</td>
+<td>改 <code>io-mode=4</code></td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="7-动手练习（30-分钟够）"><a href="#7-动手练习（30-分钟够）" class="headerlink" title="7. 动手练习（30 分钟够）"></a>7. 动手练习（30 分钟够）</h2><p>按顺序做，每步都有可验证的结果。</p>
+<blockquote>
+<p>下面的 <code>/dev/videoX</code> 换成<strong>你自己板子上的画面节点</strong>（<code>v4l2-ctl --list-devices</code> 里名字含 <code>mainpath</code> &#x2F; <code>stream_cif</code> 的那些，不一定是 <code>video0</code>）。</p>
+</blockquote>
+<p><strong>第 1 步（5 分钟）</strong> 确认 V4L2 在工作</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">v4l2-ctl -d /dev/videoX --info | grep <span class="string">&quot;Video Capture&quot;</span></span><br></pre></td></tr></table></figure>
+
+<p>看到 <code>Video Capture</code> 就说明这个节点能出画面。</p>
+<p><strong>第 2 步（5 分钟）</strong> 用 GStreamer 抓 10 帧，用文件大小验算</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">gst-launch-1.0 -q v4l2src device=/dev/videoX num-buffers=10 io-mode=4 \</span><br><span class="line">  ! video/x-raw,format=NV12,width=1280,height=720 ! filesink location=/tmp/t.nv12</span><br><span class="line"><span class="built_in">ls</span> -l /tmp/t.nv12</span><br></pre></td></tr></table></figure>
+
+<p>期望 <code>1280 × 720 × 1.5 × 10 = 13,824,000</code>。对不上就是协商被驱动改了。</p>
+<p><strong>第 3 步（10 分钟）</strong> 加编码，看 NAL 头</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">gst-launch-1.0 -q v4l2src device=/dev/videoX num-buffers=30 io-mode=4 \</span><br><span class="line">  ! video/x-raw,format=NV12,width=1280,height=720,framerate=30/1 \</span><br><span class="line">  ! mpph264enc bps=2000000 gop=30 ! h264parse ! filesink location=/tmp/t.h264</span><br><span class="line"><span class="built_in">od</span> -An -tx1 -N12 /tmp/t.h264</span><br></pre></td></tr></table></figure>
+
+<p>看到 <code>00 00 00 01 67</code> 就是标准的 Annex-B + SPS。</p>
+<p><strong>第 4 步（10 分钟）</strong> 把 <code>filesink</code> 换成 <code>appsink</code>，写一版 C 骨架</p>
+<p>先只做一件事：在回调里数帧，每 30 帧打印一次 <code>map.size</code>。能稳定打印出来，说明你已经打通了”管线 → 自己的代码”这最后一公里。</p>
+<hr>
+<h2 id="附：术语表"><a href="#附：术语表" class="headerlink" title="附：术语表"></a>附：术语表</h2><table>
+<thead>
+<tr>
+<th>术语</th>
+<th>解释</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>V4L2</strong></td>
+<td>Video for Linux 2，内核的视频采集接口标准</td>
+</tr>
+<tr>
+<td><strong>ioctl</strong></td>
+<td>用户态向字符设备发命令的系统调用</td>
+</tr>
+<tr>
+<td><strong>mmap</strong></td>
+<td>把内核缓冲区映射到用户进程地址空间，避免拷贝</td>
+</tr>
+<tr>
+<td><strong>element</strong></td>
+<td>GStreamer 的一个功能零件（取帧、转码、输出…）</td>
+</tr>
+<tr>
+<td><strong>pipeline</strong></td>
+<td>用 <code>!</code> 串起来的一串 element</td>
+</tr>
+<tr>
+<td><strong>caps</strong></td>
+<td>capabilities，描述数据格式的字符串，如 <code>video/x-raw,format=NV12,width=2112</code></td>
+</tr>
+<tr>
+<td><strong>negotiation</strong></td>
+<td>上下游 element 就”传什么格式”达成一致的过程</td>
+</tr>
+<tr>
+<td><strong>sink &#x2F; src</strong></td>
+<td>element 的输入端 &#x2F; 输出端；<code>src</code> 是产数据，<code>sink</code> 是收数据</td>
+</tr>
+<tr>
+<td><strong>appsink</strong></td>
+<td>把数据交回应用代码的 sink</td>
+</tr>
+<tr>
+<td><strong>GstBuffer</strong></td>
+<td>GStreamer 里承载一帧数据的对象</td>
+</tr>
+<tr>
+<td><strong>GstSample</strong></td>
+<td>一帧数据 + 它的 caps + 附加信息</td>
+</tr>
+<tr>
+<td><strong>ref &#x2F; unref</strong></td>
+<td>引用计数加减，忘记 unref 会内存泄漏</td>
+</tr>
+<tr>
+<td><strong>DMABUF</strong></td>
+<td>一种跨设备共享内存的机制，零拷贝的基础</td>
+</tr>
+<tr>
+<td><strong>Annex-B</strong></td>
+<td>H.264 裸流格式，用 <code>00 00 00 01</code> 分隔 NAL</td>
+</tr>
+<tr>
+<td><strong>NAL</strong></td>
+<td>H.264 的语法单元，<code>67</code> 是 SPS、<code>68</code> 是 PPS、<code>65</code> 是 IDR 切片</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="一句话总结"><a href="#一句话总结" class="headerlink" title="一句话总结"></a>一句话总结</h2><ul>
+<li><strong>V4L2</strong> 是内核定的规矩：怎么开流、怎么取帧。它很薄，只管搬像素。</li>
+<li><strong>GStreamer</strong> 是用户态的流水线：把取帧、转格式、编码、输出串起来。它的 <code>v4l2src</code> 内部就是在调 V4L2。</li>
+<li><strong>appsink</strong> 是流水线的出口：让数据从 GStreamer 回到你自己的代码里。</li>
+</ul>
+<p><strong>先跑通 GStreamer，再决定要不要下沉到 V4L2。</strong> 这个顺序能省掉很多”到底是谁的错”的排查时间。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/" data-id="cuid6aSvwJOqRh6z0Cotaq-9g" data-title="搞不清 V4L2、GStreamer、appsink？一篇讲透" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/V4L2/" rel="tag">V4L2</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" rel="tag">新人向</a></li></ul>
+
+    </footer>
+  </div>
+  
+</article>
+
+
+
+  
     <article id="post-2026-11-07-摄像头开发入门-从设备分析到网页播放" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
   <div class="article-meta">
     <a href="/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" class="article-date">
@@ -1599,7 +2153,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidwkVZubmiB5zpN6NOQZFHD" data-title="摄像头开发入门：从一台陌生设备，到浏览器里出画面" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidJBpaTkV5riPgU6Prq306T" data-title="摄像头开发入门：从一台陌生设备，到浏览器里出画面" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -2151,7 +2705,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuid5ZFs2N5wTrQDptUXOOMRy" data-title="从摄像头到网页：一次完整的视频链路拆解" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuid2bj9VOF8Kr7r1XEgfsGT9" data-title="从摄像头到网页：一次完整的视频链路拆解" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -2293,7 +2847,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" data-id="cuidatAF6pT3DoYr1BcliJlZ1" data-title="我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" data-id="cuidNNridTWwcj2B2PaHzZG3H" data-title="我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -2317,7 +2871,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">分类</h3>
     <div class="widget">
-      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%AE%9E%E6%88%98%E9%A1%B9%E7%9B%AE/">实战项目</a></li></ul>
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%AE%9E%E6%88%98%E9%A1%B9%E7%9B%AE/">实战项目</a></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/">技术笔记</a></li></ul>
     </div>
   </div>
 
@@ -2327,7 +2881,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">标签</h3>
     <div class="widget">
-      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/V4L2/" rel="tag">V4L2</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/WebSocket/" rel="tag">WebSocket</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" rel="tag">摄像头</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" rel="tag">视频链路</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/V4L2/" rel="tag">V4L2</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/WebSocket/" rel="tag">WebSocket</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" rel="tag">摄像头</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" rel="tag">新人向</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" rel="tag">视频链路</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
     </div>
   </div>
 
@@ -2337,7 +2891,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">标签云</h3>
     <div class="widget tagcloud">
-      <a href="/tags/GStreamer/" style="font-size: 20px;">GStreamer</a> <a href="/tags/ISP/" style="font-size: 10px;">ISP</a> <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/RV1126B/" style="font-size: 10px;">RV1126B</a> <a href="/tags/V4L2/" style="font-size: 10px;">V4L2</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" style="font-size: 10px;">嵌入式</a> <a href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" style="font-size: 10px;">摄像头</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" style="font-size: 10px;">视频链路</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 20px;">调试复盘</a>
+      <a href="/tags/GStreamer/" style="font-size: 20px;">GStreamer</a> <a href="/tags/ISP/" style="font-size: 10px;">ISP</a> <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/RV1126B/" style="font-size: 10px;">RV1126B</a> <a href="/tags/V4L2/" style="font-size: 15px;">V4L2</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" style="font-size: 15px;">嵌入式</a> <a href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" style="font-size: 10px;">摄像头</a> <a href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" style="font-size: 10px;">新人向</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" style="font-size: 10px;">视频链路</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 15px;">调试复盘</a>
     </div>
   </div>
 
@@ -2357,6 +2911,10 @@
     <h3 class="widget-title">最新文章</h3>
     <div class="widget">
       <ul>
+        
+          <li>
+            <a href="/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/">搞不清 V4L2、GStreamer、appsink？一篇讲透</a>
+          </li>
         
           <li>
             <a href="/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/">摄像头开发入门：从一台陌生设备，到浏览器里出画面</a>
