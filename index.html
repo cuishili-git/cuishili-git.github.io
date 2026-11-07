@@ -77,6 +77,870 @@
       <div class="outer">
         <section id="main">
   
+    <article id="post-2026-11-07-Hexo加GitHub-Pages博客-从建站到发布全流程" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/" class="article-date">
+  <time class="dt-published" datetime="2026-11-07T03:20:19.000Z" itemprop="datePublished">2026-11-07</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/">技术笔记</a>
+  </div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 itemprop="name">
+      <a class="p-name article-title" href="/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/">从零搭一套 Hexo + GitHub Pages 博客，并做到一条命令发布</a>
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>写了几十篇技术笔记散在各处，迟早会想「有个自己的地方存着」。白嫖 GitHub Pages 是最省事的路子：静态站、免费、能绑自己域名、<code>https://&lt;用户名&gt;.github.io</code> 直接就是地址。</p>
+<p>但真动手会发现流程比想象的长，坑也不少。这篇把整条路拆成两段讲透：</p>
+<ul>
+<li><strong>建站</strong>：一次性的，做完就不用再管</li>
+<li><strong>发文</strong>：每次都做，必须足够短，否则你会懒得写</li>
+</ul>
+<blockquote>
+<p>全文以一套真实在跑的站点为例，命令和输出都是实跑截下来的。你可以对照自己的环境改路径。</p>
+</blockquote>
+<hr>
+<h2 id="试验环境"><a href="#试验环境" class="headerlink" title="试验环境"></a>试验环境</h2><table>
+<thead>
+<tr>
+<th>项</th>
+<th>版本 &#x2F; 值</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>操作系统</td>
+<td>Windows 11（10.0.22631）</td>
+</tr>
+<tr>
+<td>Node.js</td>
+<td>v22.22.2</td>
+</tr>
+<tr>
+<td>Hexo</td>
+<td>8.1.2（hexo-cli 4.3.2）</td>
+</tr>
+<tr>
+<td>主题</td>
+<td>hexo-theme-landscape 1.1.0</td>
+</tr>
+<tr>
+<td>渲染器</td>
+<td>hexo-renderer-marked 7.0.1</td>
+</tr>
+<tr>
+<td>Python（发布脚本）</td>
+<td>3.13.12，仅用标准库</td>
+</tr>
+<tr>
+<td>站点本地目录</td>
+<td><code>F:\hexo-blog</code></td>
+</tr>
+<tr>
+<td>仓库</td>
+<td><code>cuishili-git/cuishili-git.github.io</code>，分支 <code>main</code></td>
+</tr>
+<tr>
+<td>线上地址</td>
+<td><a href="https://cuishili-git.github.io/">https://cuishili-git.github.io</a></td>
+</tr>
+<tr>
+<td>产物规模</td>
+<td>30 个文件 &#x2F; 1.4 MB &#x2F; 全量生成 264 ms</td>
+</tr>
+</tbody></table>
+<p>需要说明的是：<strong>这台机器 <code>github.com</code> 的 git 协议不通，但 <code>api.github.com</code> 可用</strong>。整个部署方案是围绕这个约束设计的，后面第 5 节详述。你的网络如果是通的，也可以直接用 <code>hexo deploy</code>，但本文给出的 API 方案在两种网络下都能跑。</p>
+<hr>
+<h2 id="0-先建立心智模型"><a href="#0-先建立心智模型" class="headerlink" title="0. 先建立心智模型"></a>0. 先建立心智模型</h2><p>最需要先说清的一件事：<strong>Hexo 和 GitHub Pages 是两个完全独立的东西</strong>，它们之间只有一个交接点——一堆静态文件。</p>
+<figure class="highlight verilog"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">   你写的东西              本地加工                    线上</span><br><span class="line">┌──────────────┐     ┌──────────────────┐     ┌─────────────────┐</span><br><span class="line">│ source/      │     │                  │     │                 │</span><br><span class="line">│  _posts/     │ ──&gt; │  hexo <span class="keyword">generate</span>   │ ──&gt; │  public/ 里的   │ ──&gt; GitHub Pages</span><br><span class="line">│   *<span class="variable">.md</span>       │     │                  │     │  <span class="variable">.html</span>/<span class="variable">.css</span>/<span class="variable">.js</span> │      (只是个静态服务器)</span><br><span class="line">└──────────────┘     └──────────────────┘     └─────────────────┘</span><br><span class="line">     Markdown             静态站点生成器              纯静态产物</span><br></pre></td></tr></table></figure>
+
+<p>三个推论，能省掉大量困惑：</p>
+<ol>
+<li><strong>GitHub Pages 不会解析 Markdown</strong>。它只会把仓库里的文件当静态资源发出去。所以 <code>.md</code> 必须先在本地变成 <code>.html</code>。</li>
+<li><strong>Hexo 不负责托管</strong>。它跑完就退出，产出一个 <code>public/</code> 目录，之后再也不管。所谓”发布”就是把 <code>public/</code> 弄到仓库里。</li>
+<li><strong>线上仓库里没有你的 <code>.md</code> 源文件</strong>。这是最常见的一脸懵：去 GitHub 网页看自己的博客仓库，发现只有 <code>index.html</code>，没有文章源码。因为传上去的是编译产物。源文件在你本地。</li>
+</ol>
+<blockquote>
+<p><strong>全文只记一句话</strong>：<br><strong>写 Markdown → <code>hexo generate</code> 变 HTML → 把 HTML 推到 Pages 仓库 → 完事。</strong></p>
+</blockquote>
+<hr>
+<h2 id="1-建站（只做一次）"><a href="#1-建站（只做一次）" class="headerlink" title="1. 建站（只做一次）"></a>1. 建站（只做一次）</h2><h3 id="1-1-装-Node-和-hexo-cli"><a href="#1-1-装-Node-和-hexo-cli" class="headerlink" title="1.1 装 Node 和 hexo-cli"></a>1.1 装 Node 和 hexo-cli</h3><p>Hexo 是 Node 写的。先确认 Node 在：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">node -v</span><br><span class="line">npm -v</span><br></pre></td></tr></table></figure>
+
+<figure class="highlight apache"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="attribute">v22</span>.<span class="number">22</span>.<span class="number">2</span></span><br><span class="line"><span class="attribute">10</span>.<span class="number">9</span>.<span class="number">7</span></span><br></pre></td></tr></table></figure>
+
+<p>然后装命令行工具：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">npm install -g hexo-cli</span><br><span class="line">hexo version</span><br></pre></td></tr></table></figure>
+
+<figure class="highlight apache"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="attribute">INFO</span>  Validating config</span><br><span class="line"><span class="attribute">hexo</span>: <span class="number">8</span>.<span class="number">1</span>.<span class="number">2</span></span><br><span class="line"><span class="attribute">hexo</span>-cli: <span class="number">4</span>.<span class="number">3</span>.<span class="number">2</span></span><br><span class="line"><span class="attribute">os</span>: win32 <span class="number">10</span>.<span class="number">0</span>.<span class="number">22631</span> undefined</span><br><span class="line"><span class="attribute">node</span>: <span class="number">22</span>.<span class="number">22</span>.<span class="number">2</span></span><br></pre></td></tr></table></figure>
+
+<p><code>hexo-cli</code> 是<strong>全局的脚手架</strong>，负责 <code>hexo init</code> &#x2F; <code>hexo generate</code> 这些命令；<code>hexo</code> 本体是<strong>装在站点里的依赖</strong>。两者版本号不同很正常（4.3.2 vs 8.1.2），别被绕晕。</p>
+<h3 id="1-2-初始化站点"><a href="#1-2-初始化站点" class="headerlink" title="1.2 初始化站点"></a>1.2 初始化站点</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">cd</span> /d F:</span><br><span class="line">hexo init hexo-blog</span><br><span class="line"><span class="built_in">cd</span> hexo-blog</span><br><span class="line">npm install</span><br></pre></td></tr></table></figure>
+
+<p><code>hexo init</code> 干的事：拷一份骨架（<code>_config.yml</code>、<code>source/</code>、<code>scaffolds/</code>、<code>themes/</code>），装好默认依赖。跑完就能 <code>hexo server</code> 看到默认页面了。</p>
+<h3 id="1-3-package-json-里必须有-hexo-字段（第一个坑）"><a href="#1-3-package-json-里必须有-hexo-字段（第一个坑）" class="headerlink" title="1.3 package.json 里必须有 hexo 字段（第一个坑）"></a>1.3 package.json 里必须有 <code>hexo</code> 字段（第一个坑）</h3><p>装完打开 <code>package.json</code>，应该是这个样子（节选）：</p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br></pre></td><td class="code"><pre><span class="line"><span class="punctuation">&#123;</span></span><br><span class="line">  <span class="attr">&quot;name&quot;</span><span class="punctuation">:</span> <span class="string">&quot;hexo-blog&quot;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;dependencies&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span></span><br><span class="line">    <span class="attr">&quot;hexo&quot;</span><span class="punctuation">:</span> <span class="string">&quot;^8.1.2&quot;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;hexo-deployer-git&quot;</span><span class="punctuation">:</span> <span class="string">&quot;^4.0.0&quot;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;hexo-generator-archive&quot;</span><span class="punctuation">:</span> <span class="string">&quot;^2.0.0&quot;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;hexo-generator-category&quot;</span><span class="punctuation">:</span> <span class="string">&quot;^2.0.0&quot;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;hexo-generator-index&quot;</span><span class="punctuation">:</span> <span class="string">&quot;^4.0.0&quot;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;hexo-generator-tag&quot;</span><span class="punctuation">:</span> <span class="string">&quot;^2.0.0&quot;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;hexo-renderer-ejs&quot;</span><span class="punctuation">:</span> <span class="string">&quot;^2.0.0&quot;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;hexo-renderer-marked&quot;</span><span class="punctuation">:</span> <span class="string">&quot;^7.0.1&quot;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;hexo-renderer-stylus&quot;</span><span class="punctuation">:</span> <span class="string">&quot;^3.0.1&quot;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;hexo-server&quot;</span><span class="punctuation">:</span> <span class="string">&quot;^3.0.0&quot;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;hexo-theme-landscape&quot;</span><span class="punctuation">:</span> <span class="string">&quot;^1.1.0&quot;</span></span><br><span class="line">  <span class="punctuation">&#125;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;hexo&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span></span><br><span class="line">    <span class="attr">&quot;version&quot;</span><span class="punctuation">:</span> <span class="string">&quot;8.1.2&quot;</span></span><br><span class="line">  <span class="punctuation">&#125;</span></span><br><span class="line"><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
+
+<p>注意最下面那个 <code>&quot;hexo&quot;: { &quot;version&quot;: ... }</code>。</p>
+<p><strong>如果它没了，<code>hexo generate</code> 不会报错，只会打印帮助文本然后退出</strong>——看起来像成功。原因是 hexo-cli 靠这个字段判断”当前目录是个 Hexo 站点”，没有就认为你在随便一个目录里敲了个 <code>hexo</code> 命令，于是显示 help。</p>
+<p>这个坑的恶劣之处在于：<strong>静默失败</strong>。你以为生成完了，其实 <code>public/</code> 还是旧的，然后部署上去发现新文章没出现。</p>
+<p>手动加回去即可：</p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="attr">&quot;hexo&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span></span><br><span class="line">  <span class="attr">&quot;version&quot;</span><span class="punctuation">:</span> <span class="string">&quot;8.1.2&quot;</span></span><br><span class="line"><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
+
+<h3 id="1-4-改-config-yml"><a href="#1-4-改-config-yml" class="headerlink" title="1.4 改 _config.yml"></a>1.4 改 <code>_config.yml</code></h3><figure class="highlight yaml"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># 站点信息</span></span><br><span class="line"><span class="attr">title:</span> <span class="string">老崔的技术笔记</span></span><br><span class="line"><span class="attr">subtitle:</span> <span class="string">&#x27;实战项目 · 调试复盘&#x27;</span></span><br><span class="line"><span class="attr">description:</span> <span class="string">&#x27;PyQt、工业软件、AI 应用的开发记录&#x27;</span></span><br><span class="line"><span class="attr">author:</span> <span class="string">老崔</span></span><br><span class="line"><span class="attr">language:</span> <span class="string">zh-CN</span></span><br><span class="line"><span class="attr">timezone:</span> <span class="string">&#x27;Asia/Shanghai&#x27;</span></span><br><span class="line"></span><br><span class="line"><span class="comment"># URL —— 这两行最关键</span></span><br><span class="line"><span class="attr">url:</span> <span class="string">https://cuishili-git.github.io</span></span><br><span class="line"><span class="attr">root:</span> <span class="string">/</span></span><br><span class="line"><span class="attr">permalink:</span> <span class="string">:year/:month/:day/:title/</span></span><br><span class="line"></span><br><span class="line"><span class="comment"># 目录结构（默认值，一般不用改）</span></span><br><span class="line"><span class="attr">source_dir:</span> <span class="string">source</span>          <span class="comment"># Markdown 源</span></span><br><span class="line"><span class="attr">public_dir:</span> <span class="string">public</span>          <span class="comment"># 生成产物</span></span><br><span class="line"><span class="attr">tag_dir:</span> <span class="string">tags</span></span><br><span class="line"><span class="attr">archive_dir:</span> <span class="string">archives</span></span><br><span class="line"><span class="attr">category_dir:</span> <span class="string">categories</span></span><br><span class="line"></span><br><span class="line"><span class="comment"># 首页</span></span><br><span class="line"><span class="attr">index_generator:</span></span><br><span class="line">  <span class="attr">path:</span> <span class="string">&#x27;&#x27;</span></span><br><span class="line">  <span class="attr">per_page:</span> <span class="number">10</span></span><br><span class="line">  <span class="attr">order_by:</span> <span class="string">-date</span></span><br><span class="line"></span><br><span class="line"><span class="comment"># 主题</span></span><br><span class="line"><span class="attr">theme:</span> <span class="string">landscape</span></span><br><span class="line"></span><br><span class="line"><span class="comment"># 部署（本文不用它，但建议留对）</span></span><br><span class="line"><span class="attr">deploy:</span></span><br><span class="line">  <span class="attr">type:</span> <span class="string">git</span></span><br><span class="line">  <span class="attr">repo:</span> <span class="string">https://github.com/cuishili-git/cuishili-git.github.io.git</span></span><br><span class="line">  <span class="attr">branch:</span> <span class="string">main</span></span><br></pre></td></tr></table></figure>
+
+<p>三个必须核对对的项：</p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>写错的后果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>url</code></td>
+<td>站点里所有绝对链接、RSS、sitemap 全指错域，图片和 CSS 挂掉</td>
+</tr>
+<tr>
+<td><code>root</code></td>
+<td>只有部署到子路径（如 <code>用户名.github.io/blog/</code>）时才改成 <code>/blog/</code>；根域名部署必须留 <code>/</code></td>
+</tr>
+<tr>
+<td><code>permalink</code></td>
+<td>决定文章 URL 长相。<strong>建站后再改，所有已发布链接全部失效</strong></td>
+</tr>
+</tbody></table>
+<p><code>permalink: :year/:month/:day/:title/</code> 里的 <code>:title</code> 是<strong>文件名（去掉 <code>.md</code>）</strong>，不是 front matter 里的 <code>title</code>。所以文件名本身带日期时，URL 里的日期会出现两次：</p>
+<figure class="highlight awk"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="number">2026</span><span class="regexp">/11/</span><span class="number">07</span><span class="regexp">/2026-11-07-摄像头开发入门-从设备分析到网页播放/</span></span><br><span class="line">└─ 来自 permalink ─┘└─ 来自文件名 ──────────────┘</span><br></pre></td></tr></table></figure>
+
+<p>不影响访问，只是有点长。想干净就把文件名里的日期前缀去掉，但<strong>已经发布的文章不要改名</strong>，否则老链接 404。</p>
+<h3 id="1-5-建-GitHub-仓库"><a href="#1-5-建-GitHub-仓库" class="headerlink" title="1.5 建 GitHub 仓库"></a>1.5 建 GitHub 仓库</h3><p>这一步容易搞混，因为 GitHub Pages 有两种形态：</p>
+<table>
+<thead>
+<tr>
+<th>仓库名</th>
+<th>站点地址</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>&lt;用户名&gt;.github.io</code></td>
+<td><code>https://&lt;用户名&gt;.github.io</code></td>
+<td><strong>个人主页，根路径</strong></td>
+</tr>
+<tr>
+<td>任意名字（如 <code>blog</code>）</td>
+<td><code>https://&lt;用户名&gt;.github.io/blog</code></td>
+<td>项目页，子路径</td>
+</tr>
+</tbody></table>
+<p>本文用的是第一种。仓库地址 <code>cuishili-git/cuishili-git.github.io</code>，<strong>必须公开</strong>（私有仓库用 Pages 要么付费要么受限）。</p>
+<h3 id="1-6-打开-Pages"><a href="#1-6-打开-Pages" class="headerlink" title="1.6 打开 Pages"></a>1.6 打开 Pages</h3><p>仓库 → Settings → Pages：</p>
+<figure class="highlight dart"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="title class_">Source</span>:      <span class="title class_">Deploy</span> from a branch</span><br><span class="line"><span class="title class_">Branch</span>:      main        /  (root)</span><br></pre></td></tr></table></figure>
+
+<p>保存后等一两分钟，<code>https://&lt;用户名&gt;.github.io</code> 就能访问。前提是 <code>main</code> 分支的<strong>根目录</strong>里有 <code>index.html</code>。</p>
+<h3 id="1-7-nojekyll-为什么必须有"><a href="#1-7-nojekyll-为什么必须有" class="headerlink" title="1.7 .nojekyll 为什么必须有"></a>1.7 <code>.nojekyll</code> 为什么必须有</h3><p>GitHub Pages 默认会跑一遍 <strong>Jekyll</strong>（另一个静态站点生成器）来构建你的文件。而 Jekyll 有两个”默认忽略”规则会坑到 Hexo 产物：</p>
+<ul>
+<li>忽略 <strong>以下划线开头</strong>的目录&#x2F;文件（Hexo 的很多东西是 <code>_</code> 开头）</li>
+<li>忽略某些特殊文件</li>
+</ul>
+<p>解决办法就是放一个空的 <code>.nojekyll</code> 文件在仓库根目录，告诉 Pages「别用 Jekyll，原样发」。</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">touch</span> public/.nojekyll</span><br></pre></td></tr></table></figure>
+
+<p><strong>手动 <code>touch</code> 很不可靠</strong>（下次 <code>hexo clean</code> 就没了），所以发布脚本里是每次自动写一个空 blob 上去：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># Pages 用 Jekyll 会忽略下划线开头目录，加 .nojekyll 关掉</span></span><br><span class="line">empty = api(<span class="string">&quot;POST&quot;</span>, <span class="string">f&quot;/repos/<span class="subst">&#123;REPO&#125;</span>/git/blobs&quot;</span>, token,</span><br><span class="line">            &#123;<span class="string">&quot;content&quot;</span>: <span class="string">&quot;&quot;</span>, <span class="string">&quot;encoding&quot;</span>: <span class="string">&quot;utf-8&quot;</span>&#125;)[<span class="string">&quot;sha&quot;</span>]</span><br><span class="line">blobs.append(&#123;<span class="string">&quot;path&quot;</span>: <span class="string">&quot;.nojekyll&quot;</span>, <span class="string">&quot;mode&quot;</span>: <span class="string">&quot;100644&quot;</span>, <span class="string">&quot;type&quot;</span>: <span class="string">&quot;blob&quot;</span>, <span class="string">&quot;sha&quot;</span>: empty&#125;)</span><br></pre></td></tr></table></figure>
+
+<hr>
+<h2 id="2-写文章"><a href="#2-写文章" class="headerlink" title="2. 写文章"></a>2. 写文章</h2><h3 id="2-1-文件放哪、叫什么"><a href="#2-1-文件放哪、叫什么" class="headerlink" title="2.1 文件放哪、叫什么"></a>2.1 文件放哪、叫什么</h3><figure class="highlight apache"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="attribute">F</span>:\hexo-blog\source\_posts\<span class="number">2026</span>-<span class="number">11</span>-<span class="number">07</span>-搞不清V4L2-GStreamer-appsink-一篇讲透.md</span><br></pre></td></tr></table></figure>
+
+<ul>
+<li>目录固定 <code>source/_posts/</code></li>
+<li>文件名就是 URL 里的 <code>:title</code>，所以<strong>用中文、描述性、别带空格和特殊符号</strong></li>
+<li>命名约定 <code>YYYY-MM-DD-标题.md</code>，方便自己按时间排序</li>
+</ul>
+<h3 id="2-2-front-matter-是什么"><a href="#2-2-front-matter-是什么" class="headerlink" title="2.2 front matter 是什么"></a>2.2 front matter 是什么</h3><p>每篇文章开头那段被 <code>---</code> 包起来的 YAML，叫 front matter，是<strong>文章的元数据</strong>：</p>
+<figure class="highlight yaml"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">---</span></span><br><span class="line"><span class="attr">title:</span> <span class="string">搞不清</span> <span class="string">V4L2、GStreamer、appsink？一篇讲透</span></span><br><span class="line"><span class="attr">date:</span> <span class="number">2026-11-07 10:22:41</span></span><br><span class="line"><span class="attr">tags:</span> [<span class="string">GStreamer</span>, <span class="string">V4L2</span>, <span class="string">嵌入式</span>, <span class="string">新人向</span>]</span><br><span class="line"><span class="attr">categories:</span> [<span class="string">技术笔记</span>]</span><br><span class="line"><span class="meta">---</span></span><br><span class="line"><span class="meta"></span></span><br><span class="line"><span class="string">（正文从这里开始）</span></span><br></pre></td></tr></table></figure>
+
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>作用</th>
+<th>不写的后果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>title</code></td>
+<td>文章标题</td>
+<td>取文件名</td>
+</tr>
+<tr>
+<td><code>date</code></td>
+<td>发布时间，决定排序和归档</td>
+<td>取文件创建时间，可能不对</td>
+</tr>
+<tr>
+<td><code>tags</code></td>
+<td>标签，生成 <code>/tags/xxx/</code> 聚合页</td>
+<td>不进任何标签页</td>
+</tr>
+<tr>
+<td><code>categories</code></td>
+<td>分类，生成 <code>/categories/xxx/</code></td>
+<td>归入 <code>uncategorized</code></td>
+</tr>
+</tbody></table>
+<p>两个细节：</p>
+<ul>
+<li><strong><code>tags</code> 和 <code>categories</code> 用 <code>[]</code> 数组写法</strong>，不要写成逗号分隔的裸字符串（YAML 里 <code>a, b</code> 是一个字符串，不是两个标签）</li>
+<li>front matter 后面空一行再写正文，否则第一段可能被吞进 YAML</li>
+</ul>
+<h3 id="2-3-让脚本自动补-front-matter"><a href="#2-3-让脚本自动补-front-matter" class="headerlink" title="2.3 让脚本自动补 front matter"></a>2.3 让脚本自动补 front matter</h3><p>手写 front matter 是纯粹的重复劳动，而且容易把日期写错。发布脚本里的逻辑是这样的：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">def</span> <span class="title function_">front_matter</span>(<span class="params">text: <span class="built_in">str</span>, title=<span class="literal">None</span>, tags=<span class="literal">None</span>, cats=<span class="literal">None</span></span>) -&gt; <span class="built_in">str</span>:</span><br><span class="line">    <span class="keyword">if</span> text.lstrip().startswith(<span class="string">&quot;---&quot;</span>):</span><br><span class="line">        <span class="keyword">return</span> text                                    <span class="comment"># 已有就原样保留，不覆盖</span></span><br><span class="line">    m = re.search(<span class="string">r&quot;^#\s+(.+)$&quot;</span>, text, flags=re.M)</span><br><span class="line">    t = title <span class="keyword">or</span> (m.group(<span class="number">1</span>).strip() <span class="keyword">if</span> m <span class="keyword">else</span> <span class="string">&quot;未命名&quot;</span>)</span><br><span class="line">    body = re.sub(<span class="string">r&quot;^#\s+.+\n+&quot;</span>, <span class="string">&quot;&quot;</span>, text, count=<span class="number">1</span>) <span class="keyword">if</span> m <span class="keyword">else</span> text</span><br><span class="line">    tag_str = <span class="string">&quot;[&quot;</span> + <span class="string">&quot;, &quot;</span>.join(tags) + <span class="string">&quot;]&quot;</span> <span class="keyword">if</span> tags <span class="keyword">else</span> <span class="string">&quot;[]&quot;</span></span><br><span class="line">    cat_str = <span class="string">&quot;[&quot;</span> + <span class="string">&quot;, &quot;</span>.join(cats) + <span class="string">&quot;]&quot;</span> <span class="keyword">if</span> cats <span class="keyword">else</span> <span class="string">&quot;[]&quot;</span></span><br><span class="line">    <span class="keyword">return</span> (<span class="string">f&quot;---\ntitle: <span class="subst">&#123;t&#125;</span>\ndate: <span class="subst">&#123;time.strftime(<span class="string">&#x27;%Y-%m-%d %H:%M:%S&#x27;</span>)&#125;</span>\n&quot;</span></span><br><span class="line">            <span class="string">f&quot;tags: <span class="subst">&#123;tag_str&#125;</span>\ncategories: <span class="subst">&#123;cat_str&#125;</span>\n---\n\n&quot;</span>) + body</span><br></pre></td></tr></table></figure>
+
+<p>三个设计决定值得学：</p>
+<ol>
+<li><strong>文件开头已经是 <code>---</code> 就完全不动</strong>。保证「手写 front matter」和「脚本生成」两种方式可以共存。</li>
+<li><strong>标题取首个 <code>#</code> 一级标题</strong>，然后把那一行从正文里删掉。否则页面上会出现「标题出现两次」——页头一次、正文一次。</li>
+<li><strong>日期取当前时间</strong>。所以 Markdown 里<strong>不要自己写 <code># 标题</code> 之外的时间</strong>，靠脚本注入更准。</li>
+</ol>
+<blockquote>
+<p><strong>写作约定</strong>：文首写一个 <code>#</code> 标题，正文别再重复；标签和分类用命令行参数传进去。</p>
+</blockquote>
+<hr>
+<h2 id="3-生成静态站"><a href="#3-生成静态站" class="headerlink" title="3. 生成静态站"></a>3. 生成静态站</h2><h3 id="3-1-三条命令"><a href="#3-1-三条命令" class="headerlink" title="3.1 三条命令"></a>3.1 三条命令</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># 清空 public/ 和缓存 db.json</span></span><br><span class="line">node_modules\.bin\hexo.cmd clean</span><br><span class="line"></span><br><span class="line"><span class="comment"># 生成静态站</span></span><br><span class="line">node_modules\.bin\hexo.cmd generate</span><br><span class="line"></span><br><span class="line"><span class="comment"># 本地预览（起 http://localhost:4000）</span></span><br><span class="line">node_modules\.bin\hexo.cmd server</span><br></pre></td></tr></table></figure>
+
+<p>Windows 下<strong>必须用 <code>hexo.cmd</code></strong>，不能用 <code>node_modules/.bin/hexo</code>（那是给 Linux&#x2F;macOS 的 shell 垫片，Windows 上跑会报 <code>OSError: [WinError 193]</code>）。</p>
+<h3 id="3-2-实跑输出"><a href="#3-2-实跑输出" class="headerlink" title="3.2 实跑输出"></a>3.2 实跑输出</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">cd</span> /d F:\hexo-blog</span><br><span class="line">node_modules\.bin\hexo.cmd clean</span><br><span class="line">node_modules\.bin\hexo.cmd generate</span><br></pre></td></tr></table></figure>
+
+<figure class="highlight routeros"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">INFO</span>  Validating<span class="built_in"> config</span></span><br><span class="line"><span class="built_in"></span><span class="built_in">INFO</span>  Deleted database.</span><br><span class="line"><span class="built_in">INFO</span>  Deleted public folder.</span><br><span class="line"><span class="built_in">INFO</span>  Validating<span class="built_in"> config</span></span><br><span class="line"><span class="built_in"></span><span class="built_in">INFO</span>  Start processing</span><br><span class="line"><span class="built_in">INFO</span>  Files loaded <span class="keyword">in</span> 1.33 s</span><br><span class="line"><span class="built_in">INFO</span>  Generated: archives/index.html</span><br><span class="line"><span class="built_in">INFO</span>  Generated: categories/实战项目/index.html</span><br><span class="line"><span class="built_in">INFO</span>  Generated: categories/技术笔记/index.html</span><br><span class="line"><span class="built_in">INFO</span>  Generated: tags/GStreamer/index.html</span><br><span class="line"><span class="built_in">INFO</span>  Generated: tags/V4L2/index.html</span><br><span class="line"><span class="built_in">INFO</span>  Generated: tags/新人向/index.html</span><br><span class="line"><span class="built_in">INFO</span>  Generated: css/style.css</span><br><span class="line"><span class="built_in">INFO</span>  Generated: 2026/11/07/2026-11-07-搞不清V4L2-GStreamer-appsink-一篇讲透/index.html</span><br><span class="line"><span class="built_in">INFO</span>  Generated: 2026/11/02/2026-11-02-照片型PDF翻译器实战/index.html</span><br><span class="line"><span class="built_in">INFO</span>  Generated: <span class="built_in">..</span>.（中间还有十几行）</span><br><span class="line"><span class="built_in">INFO</span>  30 files generated <span class="keyword">in</span> 264 ms</span><br></pre></td></tr></table></figure>
+
+<p>中间那一大堆 <code>Generated:</code> 有意思——<strong>每个标签、每个分类、每个月份归档，都是独立的 HTML 页面</strong>。上面能看到 <code>categories/实战项目</code>、<code>categories/技术笔记</code>、<code>tags/GStreamer</code> 等等。这就是为什么 4 篇文章能生成 30 个文件。</p>
+<p><code>clean</code> 那段输出是 3 行，<code>Deleted database.</code>（清 <code>db.json</code>）和 <code>Deleted public folder.</code> 一起做完。</p>
+<h3 id="3-3-别被-0-files-generated-骗了"><a href="#3-3-别被-0-files-generated-骗了" class="headerlink" title="3.3 别被 0 files generated 骗了"></a>3.3 别被 <code>0 files generated</code> 骗了</h3><p>如果<strong>不 clean、内容也没改</strong>直接再跑一次 generate，输出会变成这样：</p>
+<figure class="highlight routeros"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">INFO</span>  Validating<span class="built_in"> config</span></span><br><span class="line"><span class="built_in"></span><span class="built_in">INFO</span>  Start processing</span><br><span class="line"><span class="built_in">INFO</span>  Files loaded <span class="keyword">in</span> 97 ms</span><br><span class="line"><span class="built_in">INFO</span>  0 files generated <span class="keyword">in</span> 45 ms</span><br></pre></td></tr></table></figure>
+
+<p><strong><code>0 files generated</code> 不是失败</strong>。Hexo 会比对 <code>db.json</code> 里记录的文件状态，没变化的就跳过。所以：</p>
+<table>
+<thead>
+<tr>
+<th>输出</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>N files generated</code>，N &gt; 0</td>
+<td>有 N 个文件被（重新）生成，正常</td>
+</tr>
+<tr>
+<td><code>0 files generated</code></td>
+<td>没有任何文件变化，跳过生成，<strong>也正常</strong></td>
+</tr>
+<tr>
+<td>一屏 usage &#x2F; help，没有 <code>generated</code> 字样</td>
+<td>站点配置有问题，见 1.3</td>
+</tr>
+<tr>
+<td><code>ERROR</code> 开头</td>
+<td>真错误，看报错内容</td>
+</tr>
+</tbody></table>
+<p>判断成功的关键不是数字大小，而是<strong>有没有 <code>generated</code> 这个词</strong>。</p>
+<p>也因此，发布脚本里一定是 <code>clean</code> + <code>generate</code> 连着跑——<code>clean</code> 强制全量重建，避免”改了但缓存没刷”这种更隐蔽的问题。</p>
+<h3 id="3-4-产物长什么样"><a href="#3-4-产物长什么样" class="headerlink" title="3.4 产物长什么样"></a>3.4 产物长什么样</h3><figure class="highlight nix"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line">public<span class="symbol">/</span></span><br><span class="line">├── index.html                          <span class="comment"># 首页（含分页 page/2/index.html）</span></span><br><span class="line">├── <span class="number">2026</span><span class="symbol">/</span></span><br><span class="line">│   ├── <span class="number">11</span><span class="symbol">/</span></span><br><span class="line">│   │   ├── <span class="number">02</span><span class="operator">/</span><span class="number">202</span>6-<span class="number">1</span>1-<span class="number">0</span>2-照片型PDF翻译器实战<span class="symbol">/index.html</span></span><br><span class="line">│   │   └── <span class="number">07</span><span class="operator">/</span><span class="number">202</span>6-<span class="number">1</span>1-<span class="number">0</span>7-搞不清V4L2.<span class="symbol">../index.html</span></span><br><span class="line">│   └── ...                             <span class="comment"># 每篇文章一个目录</span></span><br><span class="line">├── archives<span class="symbol">/</span>                           <span class="comment"># 归档页</span></span><br><span class="line">├── tags<span class="symbol">/</span>                               <span class="comment"># 每个标签一个目录</span></span><br><span class="line">├── categories<span class="symbol">/</span>                         <span class="comment"># 每个分类一个目录</span></span><br><span class="line">├── css<span class="symbol">/</span>  js<span class="symbol">/</span>  fancybox<span class="symbol">/</span>                <span class="comment"># 主题资源</span></span><br><span class="line">└── .nojekyll                           <span class="comment"># 关 Jekyll（脚本自动加）</span></span><br></pre></td></tr></table></figure>
+
+<p>能看到 <code>30 个文件 / 1.4MB</code>，非常小。这就是静态站的好处，Pages 免费额度完全不是问题。</p>
+<p>一个反直觉的现象：<strong><code>public/</code> 是一份完整快照，不是增量</strong>。删掉一篇文章再 generate，对应的目录会一起消失。这直接影响部署策略（见 5.3）。</p>
+<hr>
+<h2 id="4-部署：三条路，只有一条走得通"><a href="#4-部署：三条路，只有一条走得通" class="headerlink" title="4. 部署：三条路，只有一条走得通"></a>4. 部署：三条路，只有一条走得通</h2><h3 id="4-1-三条路对比"><a href="#4-1-三条路对比" class="headerlink" title="4.1 三条路对比"></a>4.1 三条路对比</h3><table>
+<thead>
+<tr>
+<th>方式</th>
+<th>命令</th>
+<th>原理</th>
+<th>本文环境可用？</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>hexo deploy</code></td>
+<td><code>hexo deploy</code></td>
+<td>用 hexo-deployer-git 把 <code>public/</code> <code>git push</code> 到仓库</td>
+<td>❌ <code>github.com</code> 443 被阻断</td>
+</tr>
+<tr>
+<td>手动 git</td>
+<td><code>git push</code></td>
+<td>同上，自己 push</td>
+<td>❌ 同一个原因</td>
+</tr>
+<tr>
+<td><strong>GitHub REST API</strong></td>
+<td>自写脚本</td>
+<td>调 <code>api.github.com</code> 创建 Git 对象</td>
+<td>✅ 通了</td>
+</tr>
+</tbody></table>
+<p>前两种本质上都是 <strong>git 协议&#x2F;HTTPS 到 <code>github.com</code></strong>，通不通取决于网络。第三种走的是 <strong><code>api.github.com</code></strong>，是另一个域名，可能一个通一个不通——这台机器就是这种情况。</p>
+<p>先验证一下自己属于哪种：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">ssh -T git@github.com                 <span class="comment"># git 协议</span></span><br><span class="line">curl -sS -m 10 -o /dev/null -w <span class="string">&quot;%&#123;http_code&#125;\n&quot;</span> https://api.github.com   <span class="comment"># API</span></span><br></pre></td></tr></table></figure>
+
+<p>如果 <code>api.github.com</code> 返回 <code>200</code>，本文方案直接能用。</p>
+<h3 id="4-2-为什么不用-hexo-deploy-也不用凑"><a href="#4-2-为什么不用-hexo-deploy-也不用凑" class="headerlink" title="4.2 为什么不用 hexo deploy 也不用凑"></a>4.2 为什么不用 <code>hexo deploy</code> 也不用凑</h3><p>网上教程会告诉你「在 <code>_config.yml</code> 配好 <code>deploy</code> 然后 <code>hexo deploy</code> 一键发布」。这在网络通的情况下确实最省事。但它有两个问题：</p>
+<ol>
+<li><strong>失败信息很难读</strong>。它内部包的 git 命令，报 <code>CONNECT tunnel failed, response 502</code> 时你不会立刻知道是网络还是权限。</li>
+<li><strong>强依赖本地 git 状态</strong>。要 <code>git init</code>、要配 user.name&#x2F;email、要处理 <code>.deploy_git</code> 缓存目录——又一个可能出问题的地方。</li>
+</ol>
+<p>API 方案的代价是<strong>多写 60 行 Python</strong>，换来的是<strong>零 git 依赖</strong>和<strong>明确的 HTTP 错误码</strong>（<code>401</code> 是 token 错，<code>404</code> 是仓库名错，<code>409</code> 是分支被并发改）。对一个自己用的发布脚本，这个交换很划算。</p>
+<p>顺便说：站点目录 <code>F:\hexo-blog</code> <strong>本身并不是一个 git 仓库</strong>（没有 <code>.git</code>）。整个方案里它只是「一堆源文件 + 一个 Node 环境」，跟 Git 没有任何关系。目录里那个 <code>.deploy_git</code> 是早期尝试 <code>hexo deploy</code> 的残留，现在完全没用，删掉也不影响。</p>
+<hr>
+<h2 id="5-部署脚本拆解（核心）"><a href="#5-部署脚本拆解（核心）" class="headerlink" title="5. 部署脚本拆解（核心）"></a>5. 部署脚本拆解（核心）</h2><p>这部分讲清原理，你需要自己写或改脚本时才有底气。</p>
+<h3 id="5-1-拿-token"><a href="#5-1-拿-token" class="headerlink" title="5.1 拿 token"></a>5.1 拿 token</h3><p>GitHub API 需要认证。最省事的是「从系统里已经登录过的凭据里捞」：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">def</span> <span class="title function_">get_token</span>() -&gt; <span class="built_in">str</span>:</span><br><span class="line">    <span class="string">&quot;&quot;&quot;从 git 凭据管理器拿 GitHub token（本机已登录过）。&quot;&quot;&quot;</span></span><br><span class="line">    out = subprocess.run(</span><br><span class="line">        [<span class="string">&quot;git&quot;</span>, <span class="string">&quot;credential&quot;</span>, <span class="string">&quot;fill&quot;</span>],</span><br><span class="line">        <span class="built_in">input</span>=<span class="string">&quot;protocol=https\nhost=github.com\n&quot;</span>,</span><br><span class="line">        capture_output=<span class="literal">True</span>, text=<span class="literal">True</span>, timeout=<span class="number">30</span>,</span><br><span class="line">    ).stdout</span><br><span class="line">    <span class="keyword">for</span> line <span class="keyword">in</span> out.splitlines():</span><br><span class="line">        <span class="keyword">if</span> line.startswith(<span class="string">&quot;password=&quot;</span>):</span><br><span class="line">            <span class="keyword">return</span> line[<span class="built_in">len</span>(<span class="string">&quot;password=&quot;</span>):]</span><br><span class="line">    env = os.environ.get(<span class="string">&quot;GITHUB_TOKEN&quot;</span>, <span class="string">&quot;&quot;</span>)</span><br><span class="line">    <span class="keyword">if</span> env:</span><br><span class="line">        <span class="keyword">return</span> env</span><br><span class="line">    <span class="keyword">raise</span> SystemExit(<span class="string">&quot;未找到 GitHub 凭据：请先在 Git / GitHub Desktop 登录一次，或设置 GITHUB_TOKEN&quot;</span>)</span><br></pre></td></tr></table></figure>
+
+<p><code>git credential fill</code> 的输入是「协议 + 主机」，输出是四行：</p>
+<figure class="highlight abnf"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="attribute">protocol</span><span class="operator">=</span>https</span><br><span class="line"><span class="attribute">host</span><span class="operator">=</span>github.com</span><br><span class="line"><span class="attribute">username</span><span class="operator">=</span>cuishili-git</span><br><span class="line"><span class="attribute">password</span><span class="operator">=</span>ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</span><br></pre></td></tr></table></figure>
+
+<p><code>password</code> 那行就是 token（本机实测 40 位，是 classic PAT 的格式；<code>github_pat_</code> 开头的 fine-grained token 更长，同样能用）。</p>
+<p><strong>token 需要什么权限</strong>：如果只用 API 提交 Git 对象，<code>repo</code>（classic）或 <code>Contents: Read and write</code>（fine-grained）就够。</p>
+<blockquote>
+<p>脚本<strong>不要</strong>把 token 硬编码进文件再传到任何地方。走凭据管理器 &#x2F; 环境变量，这行字值一条命。</p>
+</blockquote>
+<h3 id="5-2-Git-对象模型：四步提交法"><a href="#5-2-Git-对象模型：四步提交法" class="headerlink" title="5.2 Git 对象模型：四步提交法"></a>5.2 Git 对象模型：四步提交法</h3><p>这是整个方案唯一需要理解的概念。GitHub 的 API 不是在「上传文件」，而是在<strong>让你手动拼装一个 Git commit</strong>。Git 内部有四种对象：</p>
+<figure class="highlight sql"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"> <span class="type">blob</span>  ────────────► tree ────────────► <span class="keyword">commit</span> ────────────► <span class="keyword">ref</span></span><br><span class="line">（文件内容）        （目录快照）        （一次提交）      （分支指针，如 main）</span><br></pre></td></tr></table></figure>
+
+<table>
+<thead>
+<tr>
+<th>对象</th>
+<th>是什么</th>
+<th>类比</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>blob</strong></td>
+<td>一份文件内容的哈希化存储，不带文件名</td>
+<td>一份装箱的货</td>
+</tr>
+<tr>
+<td><strong>tree</strong></td>
+<td>一个目录列表：<code>名字 → blob sha</code>（可以嵌套 tree）</td>
+<td>装箱单</td>
+</tr>
+<tr>
+<td><strong>commit</strong></td>
+<td>指向一个 tree，加上父 commit 和 message</td>
+<td>一次发货记录</td>
+</tr>
+<tr>
+<td><strong>ref</strong></td>
+<td>可变的指针，<code>refs/heads/main</code> 指向最新 commit</td>
+<td>「当前版本」标签</td>
+</tr>
+</tbody></table>
+<p>所以部署就是四步：</p>
+<figure class="highlight awk"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">① 每个文件 → POST <span class="regexp">/git/</span>blobs      → 得到一堆 sha</span><br><span class="line">② 把 sha 列表 → POST <span class="regexp">/git/</span>trees    → 得到一个 tree sha</span><br><span class="line">③ tree + parent + message → POST <span class="regexp">/git/</span>commits → 得到 commit sha</span><br><span class="line">④ PATCH <span class="regexp">/git/</span>refs<span class="regexp">/heads/m</span>ain 指向它 → 线上生效</span><br></pre></td></tr></table></figure>
+
+<p>对应到代码：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">def</span> <span class="title function_">deploy</span>(<span class="params">root: <span class="built_in">str</span>, token: <span class="built_in">str</span>, message: <span class="built_in">str</span></span>):</span><br><span class="line">    <span class="string">&quot;&quot;&quot;public/ 目录 → 一次 commit（blob → tree → commit → 更新 ref）。&quot;&quot;&quot;</span></span><br><span class="line">    blobs = []</span><br><span class="line">    <span class="keyword">for</span> dirpath, _dirs, files <span class="keyword">in</span> os.walk(root):</span><br><span class="line">        <span class="keyword">for</span> name <span class="keyword">in</span> files:</span><br><span class="line">            full = os.path.join(dirpath, name)</span><br><span class="line">            rel = os.path.relpath(full, root).replace(<span class="string">&quot;\\&quot;</span>, <span class="string">&quot;/&quot;</span>)   <span class="comment"># 路径必须用 /</span></span><br><span class="line">            content = base64.b64encode(io.<span class="built_in">open</span>(full, <span class="string">&quot;rb&quot;</span>).read()).decode()</span><br><span class="line">            sha = api(<span class="string">&quot;POST&quot;</span>, <span class="string">f&quot;/repos/<span class="subst">&#123;REPO&#125;</span>/git/blobs&quot;</span>, token,</span><br><span class="line">                      &#123;<span class="string">&quot;content&quot;</span>: content, <span class="string">&quot;encoding&quot;</span>: <span class="string">&quot;base64&quot;</span>&#125;)[<span class="string">&quot;sha&quot;</span>]</span><br><span class="line">            blobs.append(&#123;<span class="string">&quot;path&quot;</span>: rel, <span class="string">&quot;mode&quot;</span>: <span class="string">&quot;100644&quot;</span>, <span class="string">&quot;type&quot;</span>: <span class="string">&quot;blob&quot;</span>, <span class="string">&quot;sha&quot;</span>: sha&#125;)</span><br><span class="line"></span><br><span class="line">    <span class="comment"># .nojekyll 见 1.7</span></span><br><span class="line">    empty = api(<span class="string">&quot;POST&quot;</span>, <span class="string">f&quot;/repos/<span class="subst">&#123;REPO&#125;</span>/git/blobs&quot;</span>, token,</span><br><span class="line">                &#123;<span class="string">&quot;content&quot;</span>: <span class="string">&quot;&quot;</span>, <span class="string">&quot;encoding&quot;</span>: <span class="string">&quot;utf-8&quot;</span>&#125;)[<span class="string">&quot;sha&quot;</span>]</span><br><span class="line">    blobs.append(&#123;<span class="string">&quot;path&quot;</span>: <span class="string">&quot;.nojekyll&quot;</span>, <span class="string">&quot;mode&quot;</span>: <span class="string">&quot;100644&quot;</span>, <span class="string">&quot;type&quot;</span>: <span class="string">&quot;blob&quot;</span>, <span class="string">&quot;sha&quot;</span>: empty&#125;)</span><br><span class="line"></span><br><span class="line">    <span class="keyword">try</span>:</span><br><span class="line">        parent = api(<span class="string">&quot;GET&quot;</span>, <span class="string">f&quot;/repos/<span class="subst">&#123;REPO&#125;</span>/git/ref/heads/<span class="subst">&#123;BRANCH&#125;</span>&quot;</span>, token)[<span class="string">&quot;object&quot;</span>][<span class="string">&quot;sha&quot;</span>]</span><br><span class="line">    <span class="keyword">except</span> SystemExit:</span><br><span class="line">        parent = <span class="string">&quot;&quot;</span></span><br><span class="line"></span><br><span class="line">    tree = api(<span class="string">&quot;POST&quot;</span>, <span class="string">f&quot;/repos/<span class="subst">&#123;REPO&#125;</span>/git/trees&quot;</span>, token, &#123;<span class="string">&quot;tree&quot;</span>: blobs&#125;)[<span class="string">&quot;sha&quot;</span>]</span><br><span class="line"></span><br><span class="line">    commit = api(<span class="string">&quot;POST&quot;</span>, <span class="string">f&quot;/repos/<span class="subst">&#123;REPO&#125;</span>/git/commits&quot;</span>, token, &#123;</span><br><span class="line">        <span class="string">&quot;message&quot;</span>: message, <span class="string">&quot;tree&quot;</span>: tree,</span><br><span class="line">        <span class="string">&quot;parents&quot;</span>: [parent] <span class="keyword">if</span> parent <span class="keyword">else</span> [],</span><br><span class="line">    &#125;)[<span class="string">&quot;sha&quot;</span>]</span><br><span class="line">    <span class="keyword">if</span> parent:</span><br><span class="line">        api(<span class="string">&quot;PATCH&quot;</span>, <span class="string">f&quot;/repos/<span class="subst">&#123;REPO&#125;</span>/git/refs/heads/<span class="subst">&#123;BRANCH&#125;</span>&quot;</span>, token,</span><br><span class="line">            &#123;<span class="string">&quot;sha&quot;</span>: commit, <span class="string">&quot;force&quot;</span>: <span class="literal">False</span>&#125;)</span><br><span class="line">    <span class="keyword">else</span>:</span><br><span class="line">        api(<span class="string">&quot;POST&quot;</span>, <span class="string">f&quot;/repos/<span class="subst">&#123;REPO&#125;</span>/git/refs&quot;</span>, token,</span><br><span class="line">            &#123;<span class="string">&quot;ref&quot;</span>: <span class="string">f&quot;refs/heads/<span class="subst">&#123;BRANCH&#125;</span>&quot;</span>, <span class="string">&quot;sha&quot;</span>: commit&#125;)</span><br><span class="line">    <span class="built_in">print</span>(<span class="string">f&quot;✓ 已提交 <span class="subst">&#123;commit[:<span class="number">10</span>]&#125;</span>（<span class="subst">&#123;<span class="built_in">len</span>(blobs)&#125;</span> 个文件）&quot;</span>, flush=<span class="literal">True</span>)</span><br></pre></td></tr></table></figure>
+
+<p>四个容易翻车的细节：</p>
+<table>
+<thead>
+<tr>
+<th>细节</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>base64</code> 编码</td>
+<td>API 传二进制内容必须 base64。文本也可以直接 <code>{&quot;content&quot;: &quot;...&quot;, &quot;encoding&quot;: &quot;utf-8&quot;}</code>，但 base64 更省心</td>
+</tr>
+<tr>
+<td>路径用 <code>/</code></td>
+<td>Windows 天然是 <code>\</code>，必须 <code>replace(&quot;\\&quot;, &quot;/&quot;)</code>，否则 GitHub 上会出现一堆名字带反斜杠的怪文件</td>
+</tr>
+<tr>
+<td><code>mode: &quot;100644&quot;</code></td>
+<td>Git 里普通文件就是 <code>100644</code>；<code>100755</code> 是可执行文件，<code>120000</code> 是符号链接</td>
+</tr>
+<tr>
+<td>先读 parent 再提交</td>
+<td>不读 parent 会得到一个孤儿 commit，<code>main</code> 会丢掉历史</td>
+</tr>
+</tbody></table>
+<h3 id="5-3-为什么不能传-base-tree（最关键的一个决定）"><a href="#5-3-为什么不能传-base-tree（最关键的一个决定）" class="headerlink" title="5.3 为什么不能传 base_tree（最关键的一个决定）"></a>5.3 为什么不能传 <code>base_tree</code>（最关键的一个决定）</h3><p>创建 tree 时有个可选参数 <code>base_tree</code>：给了它，新 tree 就是在旧 tree 基础上<strong>增量修改</strong>；不给，就是<strong>完整替换</strong>。</p>
+<p>本文脚本的选择是：<strong>不给，全量覆盖</strong>。</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># 不传 base_tree：用完整树覆盖，删掉的文章才会从仓库里消失</span></span><br><span class="line">tree = api(<span class="string">&quot;POST&quot;</span>, <span class="string">f&quot;/repos/<span class="subst">&#123;REPO&#125;</span>/git/trees&quot;</span>, token, &#123;<span class="string">&quot;tree&quot;</span>: blobs&#125;)[<span class="string">&quot;sha&quot;</span>]</span><br></pre></td></tr></table></figure>
+
+<p>为什么？因为 <code>public/</code> 是一份<strong>完整快照</strong>，而我要的结果是「线上仓库 &#x3D;&#x3D; 本地 public」。如果用 <code>base_tree</code> 增量：</p>
+<ul>
+<li>加文章 ✅ 正常</li>
+<li>删文章 ❌ <strong>文件会留在线上</strong>，因为增量模式不会删除未提及的路径</li>
+</ul>
+<p>这就是为什么脚本注释里写着「删掉的文章才会从仓库里消失」。</p>
+<p>代价也很明确，必须知道：</p>
+<blockquote>
+<p><strong>仓库是 <code>public/</code> 的镜像。任何在 GitHub 网页端直接改仓库文件的操作，下次发布会全部被覆盖。</strong></p>
+<p>要改内容，改 <code>source/_posts/</code> 里的 md，重新发布。</p>
+</blockquote>
+<h3 id="5-4-提交信息与-URL"><a href="#5-4-提交信息与-URL" class="headerlink" title="5.4 提交信息与 URL"></a>5.4 提交信息与 URL</h3><figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">token = get_token()</span><br><span class="line">deploy(os.path.join(HERE, <span class="string">&quot;public&quot;</span>), token,</span><br><span class="line">       <span class="string">f&quot;post: <span class="subst">&#123;stem&#125;</span> @ <span class="subst">&#123;time.strftime(<span class="string">&#x27;%Y-%m-%d %H:%M&#x27;</span>)&#125;</span>&quot;</span>)</span><br><span class="line"></span><br><span class="line">slug = urllib.parse.quote(os.path.splitext(name)[<span class="number">0</span>])</span><br><span class="line"><span class="built_in">print</span>(<span class="string">f&quot;  https://cuishili-git.github.io/<span class="subst">&#123;time.strftime(<span class="string">&#x27;%Y/%m/%d/&#x27;</span>)&#125;</span><span class="subst">&#123;slug&#125;</span>/&quot;</span>)</span><br></pre></td></tr></table></figure>
+
+<p>提交信息形如 <code>post: 搞不清V4L2-GStreamer-appsink-一篇讲透 @ 2026-11-07 10:22</code>，在 GitHub 提交历史里一眼能看出是哪篇文章。</p>
+<p>URL 里的中文必须 <code>quote()</code> 成百分号编码（<code>%E6%90%9E...</code>），但<strong>浏览器地址栏显示的还是中文</strong>，复制粘贴没问题。</p>
+<hr>
+<h2 id="6-一条命令发布"><a href="#6-一条命令发布" class="headerlink" title="6. 一条命令发布"></a>6. 一条命令发布</h2><h3 id="6-1-命令"><a href="#6-1-命令" class="headerlink" title="6.1 命令"></a>6.1 命令</h3><figure class="highlight bat"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">&quot;D:\...\python.exe&quot; &quot;F:\hexo-blog\发布.py&quot; &quot;文章.<span class="built_in">md</span>&quot; --tags &quot;GStreamer,V4L2&quot; --categories &quot;技术笔记&quot;</span><br></pre></td></tr></table></figure>
+
+<p>参数：</p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>位置参数 <code>文章.md</code></td>
+<td>必填，Markdown 文件路径</td>
+</tr>
+<tr>
+<td><code>--title &quot;标题&quot;</code></td>
+<td>覆盖标题；默认取首个 <code>#</code></td>
+</tr>
+<tr>
+<td><code>--tags a,b</code></td>
+<td>标签，英文逗号分隔</td>
+</tr>
+<tr>
+<td><code>--categories c</code></td>
+<td>分类，<strong>建议固定用</strong>「实战项目」「技术笔记」「踩坑复盘」三个之一</td>
+</tr>
+</tbody></table>
+<h3 id="6-2-脚本内部干了-6-件事"><a href="#6-2-脚本内部干了-6-件事" class="headerlink" title="6.2 脚本内部干了 6 件事"></a>6.2 脚本内部干了 6 件事</h3><figure class="highlight verilog"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">① 读 md 文本</span><br><span class="line">② 补 front matter（已有则不动），标题取首个 #</span><br><span class="line">③ 复制到 source/_posts/YYYY-MM-DD-文件名<span class="variable">.md</span></span><br><span class="line">④ hexo clean</span><br><span class="line">⑤ hexo <span class="keyword">generate</span></span><br><span class="line">⑥ 取 token → blob×N → tree → commit → 更新 main → 打印 URL</span><br></pre></td></tr></table></figure>
+
+<p>注意第 ③ 步：<strong>脚本把文件「拷进」站点目录</strong>，所以你原始的那份 md 留在原地（工作区、项目目录），可以继续改。站点里那份是副本。</p>
+<h3 id="6-3-拖拽入口"><a href="#6-3-拖拽入口" class="headerlink" title="6.3 拖拽入口"></a>6.3 拖拽入口</h3><p><code>发布文章.bat</code> 干的事就是把拖进来的文件传给 <code>发布.py</code>：</p>
+<figure class="highlight bat"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">@<span class="built_in">echo</span> off</span><br><span class="line"><span class="built_in">cd</span> /d &quot;%~dp0&quot;</span><br><span class="line"><span class="keyword">if</span> &quot;%~<span class="number">1</span>&quot;==&quot;&quot; (</span><br><span class="line">  <span class="built_in">echo</span> Usage: drag a .<span class="built_in">md</span> file onto this script to publish it</span><br><span class="line">  <span class="built_in">pause</span></span><br><span class="line">  <span class="keyword">exit</span> /b</span><br><span class="line">)</span><br><span class="line">&quot;F:\python\pdf2doc-ai\.venv\Scripts\python.exe&quot; &quot;%~dp0发布.py&quot; &quot;%~<span class="number">1</span>&quot;</span><br><span class="line"><span class="built_in">pause</span></span><br></pre></td></tr></table></figure>
+
+<p>把 <code>.md</code> 拖到这个 bat 上就跑完，适合不想开终端的时候。</p>
+<blockquote>
+<p>这个 bat 里的 Python 路径是「借」了另一个项目的虚拟环境（<code>F:\python\pdf2doc-ai\.venv</code>）。能用，但很脆——<strong>那个项目哪天删了虚拟环境，这个 bat 就废了</strong>。发布脚本只用标准库，任何 Python 3.9+ 都能跑，建议改成系统 Python 或专门建一个环境。</p>
+</blockquote>
+<h3 id="6-4-完整输出"><a href="#6-4-完整输出" class="headerlink" title="6.4 完整输出"></a>6.4 完整输出</h3><figure class="highlight dart"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br></pre></td><td class="code"><pre><span class="line">✓ 文章已加入 source/_posts/<span class="number">2026</span>-<span class="number">11</span>-<span class="number">07</span>-搞不清<span class="title class_">V4L2</span>-<span class="title class_">GStreamer</span>-appsink-一篇讲透.md</span><br><span class="line">&gt; hexo clean</span><br><span class="line">INFO  <span class="title class_">Validating</span> config</span><br><span class="line">INFO  <span class="title class_">Deleted</span> database.</span><br><span class="line">INFO  <span class="title class_">Deleted</span> public folder.</span><br><span class="line">&gt; hexo generate</span><br><span class="line">INFO  <span class="title class_">Validating</span> config</span><br><span class="line">INFO  <span class="title class_">Start</span> processing</span><br><span class="line">INFO  <span class="title class_">Files</span> loaded <span class="keyword">in</span> <span class="number">1.28</span> s</span><br><span class="line">INFO  <span class="title class_">Generated</span>: tags/新人向/index.html</span><br><span class="line">INFO  <span class="title class_">Generated</span>: <span class="number">2026</span>/<span class="number">11</span>/<span class="number">07</span>/<span class="number">2026</span>-<span class="number">11</span>-<span class="number">07</span>-搞不清<span class="title class_">V4L2</span>-<span class="title class_">GStreamer</span>-appsink-一篇讲透/index.html</span><br><span class="line">INFO  <span class="title class_">Generated</span>: ...（其余略）</span><br><span class="line">INFO  <span class="number">31</span> files generated <span class="keyword">in</span> 3xx ms</span><br><span class="line">✓ 已提交 7ed2c0bcdb（<span class="number">31</span> 个文件）</span><br><span class="line"></span><br><span class="line">✓ 发布完成（<span class="title class_">Pages</span> 约 <span class="number">1</span> 分钟生效）：</span><br><span class="line">  https:<span class="comment">//cuishili-git.github.io/2026/11/07/2026-11-07-搞不清V4L2-GStreamer-appsink-一篇讲透/</span></span><br></pre></td></tr></table></figure>
+
+<p>（毫秒数每次都不一样，看量级即可：几十到几百毫秒。）</p>
+<p><strong>认准 <code>✓ 已提交 &lt;sha&gt;</code></strong>。看到 sha 就是提交成功了，剩下的是 GitHub 那边构建。这是某一次真实发布的输出，那次一共 31 个文件——比上一次的 30 个多 1 个，就是新加的这一篇。</p>
+<hr>
+<h2 id="7-验证"><a href="#7-验证" class="headerlink" title="7. 验证"></a>7. 验证</h2><p>刚发布完<strong>立刻访问大概率 404</strong>，这是正常的，别急着重复发布。</p>
+<h3 id="7-1-等-重试"><a href="#7-1-等-重试" class="headerlink" title="7.1 等 + 重试"></a>7.1 等 + 重试</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">curl -sS -m 20 -o /dev/null -w <span class="string">&quot;%&#123;http_code&#125;\n&quot;</span> <span class="string">&quot;https://cuishili-git.github.io/2026/11/07/xxxx/&quot;</span></span><br></pre></td></tr></table></figure>
+
+<ul>
+<li><code>404</code> → 还在构建，等 1~2 分钟</li>
+<li><code>200</code> → 好了</li>
+</ul>
+<p>用 Python 写带重试的检查更省事：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">import</span> urllib.request, urllib.parse, time</span><br><span class="line"></span><br><span class="line">url = <span class="string">&quot;https://cuishili-git.github.io/2026/11/07/&quot;</span> + urllib.parse.quote(<span class="string">&quot;2026-11-07-你的标题&quot;</span>) + <span class="string">&quot;/&quot;</span></span><br><span class="line"><span class="keyword">for</span> i <span class="keyword">in</span> <span class="built_in">range</span>(<span class="number">12</span>):</span><br><span class="line">    <span class="keyword">try</span>:</span><br><span class="line">        req = urllib.request.Request(url, headers=&#123;<span class="string">&quot;User-Agent&quot;</span>: <span class="string">&quot;Mozilla/5.0&quot;</span>&#125;)</span><br><span class="line">        <span class="keyword">with</span> urllib.request.urlopen(req, timeout=<span class="number">20</span>) <span class="keyword">as</span> r:</span><br><span class="line">            <span class="built_in">print</span>(<span class="string">&quot;HTTP&quot;</span>, r.status, <span class="string">&quot;| 长度&quot;</span>, <span class="built_in">len</span>(r.read()))</span><br><span class="line">        <span class="keyword">break</span></span><br><span class="line">    <span class="keyword">except</span> Exception <span class="keyword">as</span> e:</span><br><span class="line">        <span class="built_in">print</span>(<span class="string">&quot;第%d次: %s&quot;</span> % (i + <span class="number">1</span>, e))</span><br><span class="line">        time.sleep(<span class="number">10</span>)</span><br></pre></td></tr></table></figure>
+
+<h3 id="7-2-别只验-200，要验内容"><a href="#7-2-别只验-200，要验内容" class="headerlink" title="7.2 别只验 200，要验内容"></a>7.2 别只验 200，要验内容</h3><p><code>200</code> 只说明页面存在。<strong>空页面、模板页、旧内容也可能是 200</strong>。真正该做的是查几个只有新文章才有的关键词：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">html = r.read().decode(<span class="string">&quot;utf-8&quot;</span>, <span class="string">&quot;replace&quot;</span>)</span><br><span class="line"><span class="keyword">for</span> kw <span class="keyword">in</span> [<span class="string">&quot;subtype Sensor&quot;</span>, <span class="string">&quot;avc1.640032&quot;</span>, <span class="string">&quot;试验平台&quot;</span>]:</span><br><span class="line">    <span class="built_in">print</span>((<span class="string">&quot;  ✓ &quot;</span> <span class="keyword">if</span> kw <span class="keyword">in</span> html <span class="keyword">else</span> <span class="string">&quot;  ✗ &quot;</span>) + kw)</span><br></pre></td></tr></table></figure>
+
+<p>这三个词是我上一篇文档里的独特内容，全中才说明正文真的渲染出来了（而不是只生成了个空壳）。</p>
+<h3 id="7-3-查提交记录"><a href="#7-3-查提交记录" class="headerlink" title="7.3 查提交记录"></a>7.3 查提交记录</h3><figure class="highlight xml"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">https://github.com/<span class="tag">&lt;<span class="name">用户名</span>&gt;</span>/<span class="tag">&lt;<span class="name">仓库名</span>&gt;</span>/commit/<span class="tag">&lt;<span class="name">sha</span>&gt;</span></span><br></pre></td></tr></table></figure>
+
+<p>在网页上能看到这次提交动了哪些文件。<strong>全量覆盖的另一个可观测点</strong>：一次发布 30 个文件全部标为 modified，这是正常的，不是 bug。</p>
+<hr>
+<h2 id="8-踩坑复盘"><a href="#8-踩坑复盘" class="headerlink" title="8. 踩坑复盘"></a>8. 踩坑复盘</h2><p>全部是这台机器上真实出现的，按坑的恶劣程度排序。</p>
+<h3 id="8-1-hexo-generate-静默失败，只打印-help"><a href="#8-1-hexo-generate-静默失败，只打印-help" class="headerlink" title="8.1 hexo generate 静默失败，只打印 help"></a>8.1 <code>hexo generate</code> 静默失败，只打印 help</h3><table>
+<thead>
+<tr>
+<th>项</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>现象</td>
+<td>敲 <code>hexo generate</code>，屏幕上是一屏用法说明，<strong>没有任何报错</strong></td>
+</tr>
+<tr>
+<td>原因</td>
+<td><code>package.json</code> 缺 <code>&quot;hexo&quot;: {&quot;version&quot;: &quot;...&quot;}</code> 字段，hexo-cli 不认为这是站点</td>
+</tr>
+<tr>
+<td>定位</td>
+<td><code>cat package.json</code>，看有没有 <code>hexo</code> 键</td>
+</tr>
+<tr>
+<td>修复</td>
+<td>手动补上该字段</td>
+</tr>
+<tr>
+<td>教训</td>
+<td><strong>不报错不等于成功</strong>。判断生成的唯一依据是输出里有没有 <code>generated</code> 这个词（见 3.3）</td>
+</tr>
+</tbody></table>
+<h3 id="8-2-OSError-WinError-193-1-不是有效的-Win32-应用程序"><a href="#8-2-OSError-WinError-193-1-不是有效的-Win32-应用程序" class="headerlink" title="8.2 OSError: [WinError 193] %1 不是有效的 Win32 应用程序"></a>8.2 <code>OSError: [WinError 193] %1 不是有效的 Win32 应用程序</code></h3><table>
+<thead>
+<tr>
+<th>项</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>现象</td>
+<td>脚本调 hexo 直接抛异常</td>
+</tr>
+<tr>
+<td>原因</td>
+<td>调的是 <code>node_modules/.bin/hexo</code>，那是给 Unix 的 shell 脚本垫片</td>
+</tr>
+<tr>
+<td>修复</td>
+<td>Windows 上用 <code>node_modules/.bin/hexo.cmd</code></td>
+</tr>
+<tr>
+<td>教训</td>
+<td>Python 里 <code>subprocess</code> 调 npm 装的工具，Windows 一律认 <code>.cmd</code></td>
+</tr>
+</tbody></table>
+<h3 id="8-3-CONNECT-tunnel-failed-response-502"><a href="#8-3-CONNECT-tunnel-failed-response-502" class="headerlink" title="8.3 CONNECT tunnel failed, response 502"></a>8.3 <code>CONNECT tunnel failed, response 502</code></h3><table>
+<thead>
+<tr>
+<th>项</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>现象</td>
+<td>部署阶段报这个，<code>hexo deploy</code> 和 <code>git push</code> 都失败</td>
+</tr>
+<tr>
+<td>原因</td>
+<td>访问 <code>github.com</code> 的 git&#x2F;HTTPS 被阻断（代理也救不了）</td>
+</tr>
+<tr>
+<td>修复</td>
+<td><strong>不要</strong>继续折腾 git，改走 <code>api.github.com</code></td>
+</tr>
+<tr>
+<td>教训</td>
+<td>先分清通的是哪个域名。<code>api.github.com</code> 通就够发布用了</td>
+</tr>
+</tbody></table>
+<h3 id="8-4-沙箱里跑脚本报代理错误"><a href="#8-4-沙箱里跑脚本报代理错误" class="headerlink" title="8.4 沙箱里跑脚本报代理错误"></a>8.4 沙箱里跑脚本报代理错误</h3><table>
+<thead>
+<tr>
+<th>项</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>现象</td>
+<td><code>CONNECT tunnel failed, response 502</code> &#x2F; 超时，但 <code>curl</code> 手动跑是通的</td>
+</tr>
+<tr>
+<td>原因</td>
+<td>环境里设了 <code>http_proxy</code> 等变量，而沙箱不让出网</td>
+</tr>
+<tr>
+<td>修复</td>
+<td>执行前 <code>unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY</code>，并在非沙箱模式下跑</td>
+</tr>
+<tr>
+<td>教训</td>
+<td>网络类脚本要显式清代理变量</td>
+</tr>
+</tbody></table>
+<h3 id="8-5-提交成功但页面-404"><a href="#8-5-提交成功但页面-404" class="headerlink" title="8.5 提交成功但页面 404"></a>8.5 提交成功但页面 404</h3><table>
+<thead>
+<tr>
+<th>项</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>现象</td>
+<td>脚本打印了 <code>✓ 已提交</code>，浏览器 404</td>
+</tr>
+<tr>
+<td>原因</td>
+<td>Pages 还在构建（通常 30~90 秒）</td>
+</tr>
+<tr>
+<td>修复</td>
+<td>等。<strong>不要重复发布</strong></td>
+</tr>
+<tr>
+<td>教训</td>
+<td>区分「提交成功」和「线上生效」是两件事</td>
+</tr>
+</tbody></table>
+<h3 id="8-6-网页端改的内容被下一次发布覆盖"><a href="#8-6-网页端改的内容被下一次发布覆盖" class="headerlink" title="8.6 网页端改的内容被下一次发布覆盖"></a>8.6 网页端改的内容被下一次发布覆盖</h3><table>
+<thead>
+<tr>
+<th>项</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>现象</td>
+<td>在 GitHub 网页直接把某篇文章的 HTML 改了，下次发布后改动消失</td>
+</tr>
+<tr>
+<td>原因</td>
+<td>全量树覆盖，仓库是 <code>public/</code> 的镜像</td>
+</tr>
+<tr>
+<td>修复</td>
+<td>改 <code>source/_posts/</code> 里的 md，重新发布</td>
+</tr>
+<tr>
+<td>教训</td>
+<td>仓库里的是产物，不是源。<strong>源在本地</strong></td>
+</tr>
+</tbody></table>
+<h3 id="8-7-两份发布脚本悄悄漂移"><a href="#8-7-两份发布脚本悄悄漂移" class="headerlink" title="8.7 两份发布脚本悄悄漂移"></a>8.7 两份发布脚本悄悄漂移</h3><table>
+<thead>
+<tr>
+<th>项</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>现象</td>
+<td><code>F:\hexo-blog\发布.py</code> 和技能目录里的 <code>publish.py</code> 内容不完全一样</td>
+</tr>
+<tr>
+<td>实测差异</td>
+<td>只有一处：技能版多了 <code>SITE = os.environ.get(&quot;BLOG_SITE&quot;, r&quot;F://hexo-blog&quot;)</code>，站点目录改为可由环境变量指定；站内版用 <code>__file__</code> 所在目录</td>
+</tr>
+<tr>
+<td>影响</td>
+<td>站内版只能在 <code>F:\hexo-blog</code> 下用；<strong>技能版可以在任意位置调用</strong>（因为它不靠 <code>__file__</code> 猜路径）</td>
+</tr>
+<tr>
+<td>教训</td>
+<td>同一份逻辑存在两个副本，必然漂移。要么软链接&#x2F;导入，要么明确「哪个是权威」并定期 diff</td>
+</tr>
+</tbody></table>
+<h3 id="8-8-路径里的反斜杠跑到线上去了"><a href="#8-8-路径里的反斜杠跑到线上去了" class="headerlink" title="8.8 路径里的反斜杠跑到线上去了"></a>8.8 路径里的反斜杠跑到线上去了</h3><table>
+<thead>
+<tr>
+<th>项</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>现象</td>
+<td>仓库里出现名为 <code>2026\11\07\index.html</code> 之类的怪路径</td>
+</tr>
+<tr>
+<td>原因</td>
+<td>用 <code>os.path.relpath()</code> 得到的是 Windows 风格 <code>\</code>，直接传给 API</td>
+</tr>
+<tr>
+<td>修复</td>
+<td><code>.replace(&quot;\\&quot;, &quot;/&quot;)</code></td>
+</tr>
+<tr>
+<td>教训</td>
+<td>任何跨平台的路径字符串，进 API 前先统一成正斜杠</td>
+</tr>
+</tbody></table>
+<h3 id="8-9-文档与实际不符"><a href="#8-9-文档与实际不符" class="headerlink" title="8.9 文档与实际不符"></a>8.9 文档与实际不符</h3><p><code>README.md</code> 里写「发布脚本与技能内 <code>scripts/publish.py</code> <strong>同源</strong>」，实测<strong>不是完全同源</strong>（差 8.7 那条）。这类描述性文字最容易过期，改脚本时不会有人记得同步 README。</p>
+<p><strong>建议</strong>：README 里涉及「两处一致」的说法，要么删掉，要么附一句「以 <code>diff</code> 结果为准」。</p>
+<hr>
+<h2 id="9-常用操作速查"><a href="#9-常用操作速查" class="headerlink" title="9. 常用操作速查"></a>9. 常用操作速查</h2><h3 id="9-1-日常"><a href="#9-1-日常" class="headerlink" title="9.1 日常"></a>9.1 日常</h3><table>
+<thead>
+<tr>
+<th>想干什么</th>
+<th>命令</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>本地预览</td>
+<td><code>node_modules\.bin\hexo.cmd server</code> → <a target="_blank" rel="noopener" href="http://localhost:4000/">http://localhost:4000</a></td>
+</tr>
+<tr>
+<td>生成不预览</td>
+<td><code>node_modules\.bin\hexo.cmd clean &amp;&amp; node_modules\.bin\hexo.cmd generate</code></td>
+</tr>
+<tr>
+<td>发布一篇文章</td>
+<td><code>python F:\hexo-blog\发布.py 文章.md --tags a,b --categories 技术笔记</code></td>
+</tr>
+<tr>
+<td>拖拽发布</td>
+<td>把 md 拖到 <code>发布文章.bat</code> 上</td>
+</tr>
+<tr>
+<td>清理产物</td>
+<td><code>node_modules\.bin\hexo.cmd clean</code></td>
+</tr>
+</tbody></table>
+<h3 id="9-2-换主题"><a href="#9-2-换主题" class="headerlink" title="9.2 换主题"></a>9.2 换主题</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">npm install hexo-theme-next</span><br></pre></td></tr></table></figure>
+
+<p>然后 <code>_config.yml</code> 里 <code>theme: next</code>，重新生成。主题配置在 <code>_config.next.yml</code> 或 <code>themes/next/_config.yml</code>。</p>
+<p><strong>换主题会改变 HTML 结构</strong>，如果你有自定义 CSS 或注入脚本，需要一起改。</p>
+<h3 id="9-3-绑自定义域名"><a href="#9-3-绑自定义域名" class="headerlink" title="9.3 绑自定义域名"></a>9.3 绑自定义域名</h3><ol>
+<li>域名 DNS 加 <code>CNAME</code> 记录指向 <code>&lt;用户名&gt;.github.io</code></li>
+<li>仓库 Settings → Pages → Custom domain 填域名</li>
+<li>GitHub 会在仓库根自动生成 <code>CNAME</code> 文件</li>
+</ol>
+<p><strong>注意</strong>：全量覆盖部署会把仓库根的 <code>CNAME</code> <strong>冲掉</strong>。必须在脚本里也加一个 CNAME blob（跟 <code>.nojekyll</code> 一样处理），否则每次发布都要去网页端重新配一遍。</p>
+<h3 id="9-4-加文章但不想现在上线"><a href="#9-4-加文章但不想现在上线" class="headerlink" title="9.4 加文章但不想现在上线"></a>9.4 加文章但不想现在上线</h3><p>Hexo 的草稿机制：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">hexo new draft <span class="string">&quot;草稿标题&quot;</span>     <span class="comment"># 存到 source/_drafts/</span></span><br><span class="line">hexo publish draft <span class="string">&quot;草稿标题&quot;</span> <span class="comment"># 转正到 _posts/</span></span><br></pre></td></tr></table></figure>
+
+<p><code>_drafts/</code> 下的东西不会被 generate（除非 <code>--draft</code>）。</p>
+<h3 id="9-5-文章里的图片"><a href="#9-5-文章里的图片" class="headerlink" title="9.5 文章里的图片"></a>9.5 文章里的图片</h3><p><code>post_asset_folder: true</code> 会让每篇文章配一个同名目录，图片放进去用相对路径引用。本文这套配置是 <code>false</code>，所以图片建议：</p>
+<ul>
+<li>放 <code>source/images/</code>，用 <code>/images/xxx.png</code> 绝对路径引用</li>
+<li>或直接外链图床</li>
+</ul>
+<hr>
+<h2 id="10-收尾：这套东西的分层"><a href="#10-收尾：这套东西的分层" class="headerlink" title="10. 收尾：这套东西的分层"></a>10. 收尾：这套东西的分层</h2><p>回头看一眼，其实只有三层，各管各的：</p>
+<table>
+<thead>
+<tr>
+<th>层</th>
+<th>组件</th>
+<th>职责</th>
+<th>出问题时看哪</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>写作层</td>
+<td><code>source/_posts/*.md</code></td>
+<td>内容</td>
+<td>文件在不在、front matter 对不对</td>
+</tr>
+<tr>
+<td>生成层</td>
+<td>Hexo + 主题</td>
+<td>md → html</td>
+<td><code>N files generated</code> 那行、<code>public/</code> 里的文件</td>
+</tr>
+<tr>
+<td>分发层</td>
+<td>GitHub API + Pages</td>
+<td>html → 线上</td>
+<td><code>✓ 已提交 &lt;sha&gt;</code>、HTTP 200</td>
+</tr>
+</tbody></table>
+<p>排错的顺序应该是<strong>从下往上</strong>：先确认网络&#x2F;API 通（<code>curl api.github.com</code>），再确认 generate 出了文件，最后才怀疑文章内容。反过来做（一上来改 md）是最费时间的。</p>
+<blockquote>
+<p>再记一遍那句话：<br><strong>写 Markdown → <code>hexo generate</code> 变 HTML → 把 HTML 推到 Pages 仓库 → 完事。</strong></p>
+<p>这套方案里唯一”非标准”的地方是第三步走 API 而不是 git。理解了 blob → tree → commit → ref 这四步，你就再也不会被”推送失败”卡住了。</p>
+</blockquote>
+<hr>
+<h2 id="附录：文件与术语"><a href="#附录：文件与术语" class="headerlink" title="附录：文件与术语"></a>附录：文件与术语</h2><h3 id="站点目录"><a href="#站点目录" class="headerlink" title="站点目录"></a>站点目录</h3><table>
+<thead>
+<tr>
+<th>路径</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>_config.yml</code></td>
+<td>站点配置（标题、url、permalink、主题、deploy）</td>
+</tr>
+<tr>
+<td><code>source/_posts/</code></td>
+<td>文章 Markdown，<strong>唯一的源</strong></td>
+</tr>
+<tr>
+<td><code>public/</code></td>
+<td>生成产物，每次 clean 会整个删掉重建</td>
+</tr>
+<tr>
+<td><code>db.json</code></td>
+<td>Hexo 的缓存数据库，clean 时清空</td>
+</tr>
+<tr>
+<td><code>node_modules/.bin/hexo.cmd</code></td>
+<td>Windows 下的 hexo 入口</td>
+</tr>
+<tr>
+<td><code>发布.py</code></td>
+<td>一键发布脚本</td>
+</tr>
+<tr>
+<td><code>发布文章.bat</code> &#x2F; <code>publish.bat</code></td>
+<td>拖拽 &#x2F; 命令行入口</td>
+</tr>
+<tr>
+<td><code>.deploy_git/</code></td>
+<td><code>hexo deploy</code> 的残留，可删</td>
+</tr>
+</tbody></table>
+<h3 id="术语"><a href="#术语" class="headerlink" title="术语"></a>术语</h3><table>
+<thead>
+<tr>
+<th>词</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>front matter</strong></td>
+<td>文章开头 <code>---</code> 包住的 YAML 元数据</td>
+</tr>
+<tr>
+<td><strong>permalink</strong></td>
+<td>文章 URL 的模板，<code>_config.yml</code> 里配</td>
+</tr>
+<tr>
+<td><strong>blob</strong></td>
+<td>Git 里存文件内容的对象</td>
+</tr>
+<tr>
+<td><strong>tree</strong></td>
+<td>Git 里表示目录结构的对象</td>
+</tr>
+<tr>
+<td><strong>ref</strong></td>
+<td>分支指针，如 <code>refs/heads/main</code></td>
+</tr>
+<tr>
+<td><strong>PAT</strong></td>
+<td>Personal Access Token，调 GitHub API 的凭据</td>
+</tr>
+<tr>
+<td><strong><code>.nojekyll</code></strong></td>
+<td>让 Pages 跳过 Jekyll 构建的空文件</td>
+</tr>
+<tr>
+<td><strong>CNAME</strong></td>
+<td>自定义域名用的文件，放仓库根</td>
+</tr>
+</tbody></table>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/" data-id="cuids91-UgCxa-3GnLOQ8uVxX" data-title="从零搭一套 Hexo + GitHub Pages 博客，并做到一条命令发布" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/GitHub-Pages/" rel="tag">GitHub Pages</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Hexo/" rel="tag">Hexo</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E5%8D%9A%E5%AE%A2/" rel="tag">博客</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" rel="tag">新人向</a></li></ul>
+
+    </footer>
+  </div>
+  
+</article>
+
+
+
+  
     <article id="post-2026-11-07-搞不清V4L2-GStreamer-appsink-一篇讲透" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
   <div class="article-meta">
     <a href="/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/" class="article-date">
@@ -617,7 +1481,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/" data-id="cuid6aSvwJOqRh6z0Cotaq-9g" data-title="搞不清 V4L2、GStreamer、appsink？一篇讲透" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/" data-id="cuidVUp_N-Ihyz7nYCCg3gvVH" data-title="搞不清 V4L2、GStreamer、appsink？一篇讲透" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -2153,7 +3017,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidJBpaTkV5riPgU6Prq306T" data-title="摄像头开发入门：从一台陌生设备，到浏览器里出画面" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuid6AifqfSlK0Jexg_HdNJle" data-title="摄像头开发入门：从一台陌生设备，到浏览器里出画面" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -2705,7 +3569,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuid2bj9VOF8Kr7r1XEgfsGT9" data-title="从摄像头到网页：一次完整的视频链路拆解" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidNCy6ctjHeHAPwTtsiFiJY" data-title="从摄像头到网页：一次完整的视频链路拆解" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -2847,7 +3711,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" data-id="cuidNNridTWwcj2B2PaHzZG3H" data-title="我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" data-id="cuidKIBCsV4gLvkDpSrdRvp7M" data-title="我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -2881,7 +3745,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">标签</h3>
     <div class="widget">
-      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/V4L2/" rel="tag">V4L2</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/WebSocket/" rel="tag">WebSocket</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" rel="tag">摄像头</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" rel="tag">新人向</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" rel="tag">视频链路</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/GitHub-Pages/" rel="tag">GitHub Pages</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Hexo/" rel="tag">Hexo</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/V4L2/" rel="tag">V4L2</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/WebSocket/" rel="tag">WebSocket</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%8D%9A%E5%AE%A2/" rel="tag">博客</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" rel="tag">摄像头</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" rel="tag">新人向</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" rel="tag">视频链路</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
     </div>
   </div>
 
@@ -2891,7 +3755,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">标签云</h3>
     <div class="widget tagcloud">
-      <a href="/tags/GStreamer/" style="font-size: 20px;">GStreamer</a> <a href="/tags/ISP/" style="font-size: 10px;">ISP</a> <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/RV1126B/" style="font-size: 10px;">RV1126B</a> <a href="/tags/V4L2/" style="font-size: 15px;">V4L2</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" style="font-size: 15px;">嵌入式</a> <a href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" style="font-size: 10px;">摄像头</a> <a href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" style="font-size: 10px;">新人向</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" style="font-size: 10px;">视频链路</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 15px;">调试复盘</a>
+      <a href="/tags/GStreamer/" style="font-size: 20px;">GStreamer</a> <a href="/tags/GitHub-Pages/" style="font-size: 10px;">GitHub Pages</a> <a href="/tags/Hexo/" style="font-size: 10px;">Hexo</a> <a href="/tags/ISP/" style="font-size: 10px;">ISP</a> <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/RV1126B/" style="font-size: 10px;">RV1126B</a> <a href="/tags/V4L2/" style="font-size: 15px;">V4L2</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/%E5%8D%9A%E5%AE%A2/" style="font-size: 10px;">博客</a> <a href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" style="font-size: 15px;">嵌入式</a> <a href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" style="font-size: 10px;">摄像头</a> <a href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" style="font-size: 15px;">新人向</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" style="font-size: 10px;">视频链路</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 15px;">调试复盘</a>
     </div>
   </div>
 
@@ -2911,6 +3775,10 @@
     <h3 class="widget-title">最新文章</h3>
     <div class="widget">
       <ul>
+        
+          <li>
+            <a href="/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/">从零搭一套 Hexo + GitHub Pages 博客，并做到一条命令发布</a>
+          </li>
         
           <li>
             <a href="/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/">搞不清 V4L2、GStreamer、appsink？一篇讲透</a>
