@@ -77,6 +77,110 @@
       <div class="outer">
         <section id="main">
   
+    <article id="post-2026-11-10-RV1126B视频通道实战-MIPI与ONVIF-抓图验活与录像命令" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2026/11/10/2026-11-10-RV1126B%E8%A7%86%E9%A2%91%E9%80%9A%E9%81%93%E5%AE%9E%E6%88%98-MIPI%E4%B8%8EONVIF-%E6%8A%93%E5%9B%BE%E9%AA%8C%E6%B4%BB%E4%B8%8E%E5%BD%95%E5%83%8F%E5%91%BD%E4%BB%A4/" class="article-date">
+  <time class="dt-published" datetime="2026-11-10T02:52:40.000Z" itemprop="datePublished">2026-11-10</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/%E5%AE%9E%E6%88%98%E9%A1%B9%E7%9B%AE/">实战项目</a>
+  </div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 itemprop="name">
+      <a class="p-name article-title" href="/2026/11/10/2026-11-10-RV1126B%E8%A7%86%E9%A2%91%E9%80%9A%E9%81%93%E5%AE%9E%E6%88%98-MIPI%E4%B8%8EONVIF-%E6%8A%93%E5%9B%BE%E9%AA%8C%E6%B4%BB%E4%B8%8E%E5%BD%95%E5%83%8F%E5%91%BD%E4%BB%A4/">RV1126B 视频通道实战：v4l2 命令行抓图、录像与 MIPI/ONVIF 双路排查</a>
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>在 RV1126B（OK1126Bx-S）上做摄像头开发，网页直播、算法推理都封装在平台进程里，但排查问题最终要落到 <strong>V4L2 命令行</strong>：直接对 <code>/dev/videoX</code> 抓一帧、录一段，把”画面黑了”拆成”哪一层黑了”。本文整理实测可用的 v4l2&#x2F;ffmpeg 命令、设备节点地图，以及三次黑屏换来的踩坑复盘。</p>
+<h2 id="一、设备节点地图：先搞清-dev-video-都是谁"><a href="#一、设备节点地图：先搞清-dev-video-都是谁" class="headerlink" title="一、设备节点地图：先搞清 &#x2F;dev&#x2F;video* 都是谁"></a>一、设备节点地图：先搞清 &#x2F;dev&#x2F;video* 都是谁</h2><p>板上是 rkisp + rkcif 的流水线，节点非常多，<code>v4l2-ctl --list-devices</code> 一看便知（实测输出节选）：</p>
+<table>
+<thead>
+<tr>
+<th>节点</th>
+<th>归属</th>
+<th>干什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>/dev/video0</code></td>
+<td>rkaiisp</td>
+<td>AI ISP 处理</td>
+</tr>
+<tr>
+<td><code>/dev/video23~27,30</code></td>
+<td><strong>rkisp-vir0 mainpath</strong></td>
+<td>ISP 主输出，<strong>dp 平台就吃 video23</strong></td>
+</tr>
+<tr>
+<td><code>/dev/video28,29,36,37</code></td>
+<td>rkisp-statistics</td>
+<td>3A 统计数据（AE&#x2F;AWB 直方图）</td>
+</tr>
+<tr>
+<td><code>/dev/video1~11</code></td>
+<td>rkcif-mipi-lvds</td>
+<td>CIF 侧原始流（绕过 ISP）</td>
+</tr>
+<tr>
+<td><code>/dev/media0/1/3</code></td>
+<td>media controller</td>
+<td>拓扑与链路管理</td>
+</tr>
+</tbody></table>
+<p>对应关系：<code>media0</code> &#x3D; rkisp-vir0 虚拟拓扑，<code>media1</code> &#x3D; CIF，<code>media3</code> &#x3D; ISP mainpath。查拓扑用：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">media-ctl -d /dev/media3 -p        <span class="comment"># 打印 ISP mainpath 的实体和链路</span></span><br><span class="line">media-ctl -d /dev/media0 --reset   <span class="comment"># 清 ISP 脏状态（救屏脚本的第 2 步）</span></span><br></pre></td></tr></table></figure>
+
+<h2 id="二、抓一帧看画面（v4l2-ctl-标准三步）"><a href="#二、抓一帧看画面（v4l2-ctl-标准三步）" class="headerlink" title="二、抓一帧看画面（v4l2-ctl 标准三步）"></a>二、抓一帧看画面（v4l2-ctl 标准三步）</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># ① 看这个节点支持什么格式和分辨率</span></span><br><span class="line">v4l2-ctl -d /dev/video23 --list-formats-ext</span><br><span class="line"><span class="comment">#    实测输出：UYVY / NV16 / NV61 / NV21 / NV12 ...，32x32 ~ 4096x3072</span></span><br><span class="line"></span><br><span class="line"><span class="comment"># ② 设格式：mainpath 输出 NV12，2112x1568 是本传感器有效分辨率</span></span><br><span class="line">v4l2-ctl -d /dev/video23 --set-fmt-video=width=2112,height=1568,pixelformat=NV12</span><br><span class="line"></span><br><span class="line"><span class="comment"># ③ 抓 1 帧落盘（NV12 原始数据，2112*1568*1.5 = 4961280 字节）</span></span><br><span class="line">v4l2-ctl -d /dev/video23 --stream-mmap --stream-count=1 --stream-to=/tmp/f.raw</span><br><span class="line"></span><br><span class="line"><span class="comment"># ④ RAW 不可看，转成 JPEG</span></span><br><span class="line">ffmpeg -y -f rawvideo -pix_fmt nv12 -s 2112x1568 -i /tmp/f.raw /tmp/frame.jpg</span><br></pre></td></tr></table></figure>
+
+<p>拿到 JPEG 后<strong>算平均亮度（Yavg）</strong>，这是判黑屏的唯一硬标准：黑帧实测 1.97，正常室内 96~140。进程活着、心跳正常、线程数对——都不算数，只有像素算亮度算数。</p>
+<h2 id="三、录像（ffmpeg-板载硬件编码器）"><a href="#三、录像（ffmpeg-板载硬件编码器）" class="headerlink" title="三、录像（ffmpeg + 板载硬件编码器）"></a>三、录像（ffmpeg + 板载硬件编码器）</h2><p>板上自带 <code>ffmpeg 4.4.4</code>、<code>GStreamer 1.24.11</code>，硬件编码器用 <code>h264_v4l2m2m</code>（V4L2 M2M 接口，不吃 CPU）：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># 连续录 10 秒 NV12 → 硬编 H264 → mp4</span></span><br><span class="line">ffmpeg -y -f v4l2 -input_format nv12 -video_size 2112x1568 -i /dev/video23 \</span><br><span class="line">       -c:v h264_v4l2m2m -b:v 4M -t 10 /tmp/rec.mp4</span><br><span class="line"></span><br><span class="line"><span class="comment"># 只要原始流不转码（体积大：4961280 字节/帧 × 25fps ≈ 118MB/s，仅调试用）</span></span><br><span class="line">v4l2-ctl -d /dev/video23 --stream-mmap --stream-count=250 --stream-to=/tmp/raw.yuv</span><br></pre></td></tr></table></figure>
+
+<p>录网络摄像头（ONVIF&#x2F;RTSP）则完全不用碰 v4l2，流拷贝零转码：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">ffmpeg -rtsp_transport tcp -i <span class="string">&quot;rtsp://192.168.1.108:554/cam/realmonitor?channel=1&amp;subtype=0&quot;</span> \</span><br><span class="line">       -c copy -f mp4 rec.mp4      <span class="comment"># -rtsp_transport tcp 必加，UDP 会花屏</span></span><br></pre></td></tr></table></figure>
+
+<p>平台侧另有独立录像进程 <code>recordd</code>（socket 控制面 <code>/tmp/recordd.sock</code>），GB28181 推流参数在 <code>tki_media_setting</code> 表（UDP &#x2F; MTU 1400 &#x2F; 推流目标 IP）。</p>
+<h2 id="四、踩坑复盘"><a href="#四、踩坑复盘" class="headerlink" title="四、踩坑复盘"></a>四、踩坑复盘</h2><h3 id="坑-1：v4l2-ctl-报-Device-or-resource-busy（EBUSY）"><a href="#坑-1：v4l2-ctl-报-Device-or-resource-busy（EBUSY）" class="headerlink" title="坑 1：v4l2-ctl 报 Device or resource busy（EBUSY）"></a>坑 1：v4l2-ctl 报 Device or resource busy（EBUSY）</h3><p><code>/dev/video23</code> 是平台进程 dp 的地盘。dp 懒加载 mipi worker 后会持有 vb2 队列，<strong>即使 <code>/proc/*/fd</code> 里查不到谁占着，驱动侧的会话状态还在</strong>，v4l2-ctl 的 <code>S_FMT</code>&#x2F;<code>REQBUFS</code> 照样 EBUSY（实测两次复现）。正确姿势二选一：</p>
+<ul>
+<li><strong>停 dp 再抓</strong>：<code>/etc/init.d</code> 停 device_platform → v4l2 随便抓 → 再启动。标准救屏脚本 <code>restart_camera.sh</code> 的 [1&#x2F;4] 步就是干这个的；</li>
+<li><strong>别和 dp 抢</strong>：临时验证优先用平台的抓帧能力（流程 snapshot 节点返回 dma_fd；ONVIF 通道自动落 <code>snapshots/*.jpg</code>），SFTP 拉回来算亮度，零冲突。</li>
+</ul>
+<h3 id="坑-2：判黑屏只认-Yavg，其他全是参考"><a href="#坑-2：判黑屏只认-Yavg，其他全是参考" class="headerlink" title="坑 2：判黑屏只认 Yavg，其他全是参考"></a>坑 2：判黑屏只认 Yavg，其他全是参考</h3><p>有流 13 线程、无流 8~9 线程都正常；心跳、GET&#x2F;STATE 正常也不代表画面活。曾把 9 线程当故障折腾半天，最后抓帧一算亮度 138——画面本来就好的。<strong>判据优先级：抓帧 Yavg &gt; API 回包 &gt; 线程数</strong>。</p>
+<h3 id="坑-3：双通道分不清，白忙一场"><a href="#坑-3：双通道分不清，白忙一场" class="headerlink" title="坑 3：双通道分不清，白忙一场"></a>坑 3：双通道分不清，白忙一场</h3><p>平台同时存在本地 MIPI（<code>vch_1</code>）和 ONVIF 网络通道（<code>vch_tki_device_*</code>，RTSP 拉流）。网络摄像头 RTSP 服务时好时坏（实测连报 7 次 <code>Could not open resource for reading and writing</code>），网页黑屏时<strong>先确认看的是哪一路</strong>——那 7 次错误全是网络路的，本地 MIPI 无辜。</p>
+<h3 id="坑-4：SSH-里-sudo-卡死"><a href="#坑-4：SSH-里-sudo-卡死" class="headerlink" title="坑 4：SSH 里 sudo 卡死"></a>坑 4：SSH 里 sudo 卡死</h3><p>非交互 SSH 通道里 <code>sudo 脚本</code> 会停在密码提示直到超时，必须 <code>echo &lt;密码&gt; | sudo -S &lt;命令&gt;</code>。</p>
+<h2 id="五、命令速查"><a href="#五、命令速查" class="headerlink" title="五、命令速查"></a>五、命令速查</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">v4l2-ctl --list-devices                                  <span class="comment"># 节点地图</span></span><br><span class="line">v4l2-ctl -d /dev/video23 --list-formats-ext              <span class="comment"># 格式/分辨率</span></span><br><span class="line">v4l2-ctl -d /dev/video23 --set-fmt-video=width=2112,height=1568,pixelformat=NV12</span><br><span class="line">v4l2-ctl -d /dev/video23 --stream-mmap --stream-count=1 --stream-to=/tmp/f.raw</span><br><span class="line">ffmpeg -f rawvideo -pix_fmt nv12 -s 2112x1568 -i f.raw out.jpg   <span class="comment"># RAW→JPEG</span></span><br><span class="line">ffmpeg -f v4l2 -input_format nv12 -i /dev/video23 -c:v h264_v4l2m2m -b:v 4M rec.mp4</span><br><span class="line">media-ctl -d /dev/media3 -p                              <span class="comment"># ISP 拓扑</span></span><br><span class="line">dmesg | grep -E <span class="string">&quot;flip ops not finish|leaving buf in active&quot;</span>  <span class="comment"># 黑屏三宗罪</span></span><br></pre></td></tr></table></figure>
+
+<h2 id="小结"><a href="#小结" class="headerlink" title="小结"></a>小结</h2><p>v4l2 命令行是把”黑盒平台”拆开看的螺丝刀：<code>--list-devices</code> 建地图、<code>--stream-mmap</code> 抓帧验活、<code>ffmpeg + h264_v4l2m2m</code> 硬编录像。三条纪律：<strong>判活只认 Yavg；video23 别和平台进程抢；黑屏先分清 MIPI 还是网络通道</strong>。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://cuishili-git.github.io/2026/11/10/2026-11-10-RV1126B%E8%A7%86%E9%A2%91%E9%80%9A%E9%81%93%E5%AE%9E%E6%88%98-MIPI%E4%B8%8EONVIF-%E6%8A%93%E5%9B%BE%E9%AA%8C%E6%B4%BB%E4%B8%8E%E5%BD%95%E5%83%8F%E5%91%BD%E4%BB%A4/" data-id="cuideqPHhc9e9pqQLxUGBQcQi" data-title="RV1126B 视频通道实战：v4l2 命令行抓图、录像与 MIPI/ONVIF 双路排查" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/MIPI/" rel="tag">MIPI</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/ONVIF/" rel="tag">ONVIF</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/V4L2/" rel="tag">V4L2</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/ffmpeg/" rel="tag">ffmpeg</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li></ul>
+
+    </footer>
+  </div>
+  
+</article>
+
+
+
+  
     <article id="post-2026-11-10-RV1126B开发板GPIO实战sysfs点灯" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
   <div class="article-meta">
     <a href="/2026/11/10/2026-11-10-RV1126B%E5%BC%80%E5%8F%91%E6%9D%BFGPIO%E5%AE%9E%E6%88%98sysfs%E7%82%B9%E7%81%AF/" class="article-date">
@@ -268,7 +372,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/10/2026-11-10-RV1126B%E5%BC%80%E5%8F%91%E6%9D%BFGPIO%E5%AE%9E%E6%88%98sysfs%E7%82%B9%E7%81%AF/" data-id="cuidvSglgE689iGF2w13Li2ZH" data-title="RV1126B 开发板 GPIO 实战：从原理图丝印到 sysfs 点灯（附三个排坑案例）" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/10/2026-11-10-RV1126B%E5%BC%80%E5%8F%91%E6%9D%BFGPIO%E5%AE%9E%E6%88%98sysfs%E7%82%B9%E7%81%AF/" data-id="cuidQ1-dBAE17AV3dLmlb3nXr" data-title="RV1126B 开发板 GPIO 实战：从原理图丝印到 sysfs 点灯（附三个排坑案例）" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -717,7 +821,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-ISP%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0%E8%B0%83%E6%95%B4-%E4%BB%8Erkaiq%E6%8E%A5%E7%AE%A1%E5%88%B0%E5%89%8D%E7%AB%AF%E8%B0%83%E8%89%B2/" data-id="cuidDMUEyY61fSUX22EGNVgkL" data-title="ISP 图像参数调整：从 rkaiq 接管到前端调色" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-ISP%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0%E8%B0%83%E6%95%B4-%E4%BB%8Erkaiq%E6%8E%A5%E7%AE%A1%E5%88%B0%E5%89%8D%E7%AB%AF%E8%B0%83%E8%89%B2/" data-id="cuidmPe9LpiUWwNtXZCO51tQO" data-title="ISP 图像参数调整：从 rkaiq 接管到前端调色" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -1395,7 +1499,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%B5%81%E5%AA%92%E4%BD%93%E5%9B%9B%E5%8F%82%E6%95%B0-%E5%88%86%E8%BE%A8%E7%8E%87%E5%B8%A7%E7%8E%87%E7%A0%81%E7%8E%87GOP%E8%AE%B2%E6%B8%85%E6%A5%9A/" data-id="cuid4XfLtV3Pxbg7IvJXviCN1" data-title="分辨率、帧率、码率、GOP：视频参数一次讲明白" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%B5%81%E5%AA%92%E4%BD%93%E5%9B%9B%E5%8F%82%E6%95%B0-%E5%88%86%E8%BE%A8%E7%8E%87%E5%B8%A7%E7%8E%87%E7%A0%81%E7%8E%87GOP%E8%AE%B2%E6%B8%85%E6%A5%9A/" data-id="cuida8vGFZo7dBVphl5yLpJ_7" data-title="分辨率、帧率、码率、GOP：视频参数一次讲明白" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -2263,7 +2367,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/" data-id="cuidoq5qkog_2g2FGM3wiD1J-" data-title="从零搭一套 Hexo + GitHub Pages 博客，并做到一条命令发布" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/" data-id="cuidmZfaQhS2-ASCAWkk_mpri" data-title="从零搭一套 Hexo + GitHub Pages 博客，并做到一条命令发布" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -2817,7 +2921,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/" data-id="cuid-C4B7p2u9kY7R9X7sMSqU" data-title="搞不清 V4L2、GStreamer、appsink？一篇讲透" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/" data-id="cuidQundQhb8GpHE-V8HZlfsr" data-title="搞不清 V4L2、GStreamer、appsink？一篇讲透" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -4353,7 +4457,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuid28ph_Lizpf_IzxDjotz8s" data-title="摄像头开发入门：从一台陌生设备，到浏览器里出画面" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidO5Z2n3tHxtsvBE40zvj_x" data-title="摄像头开发入门：从一台陌生设备，到浏览器里出画面" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -4905,7 +5009,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidUlaRJ5ZrA7aMz1-8lq8d8" data-title="从摄像头到网页：一次完整的视频链路拆解" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidztRkPSyO3N0ErJuOig6DT" data-title="从摄像头到网页：一次完整的视频链路拆解" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -5047,7 +5151,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" data-id="cuid4oD75JzB1K7C7gWPYoTW_" data-title="我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" data-id="cuid0Fj81QqSoLhKwftxGu-DE" data-title="我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -5081,7 +5185,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">标签</h3>
     <div class="widget">
-      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/GPIO/" rel="tag">GPIO</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/GitHub-Pages/" rel="tag">GitHub Pages</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/H-264/" rel="tag">H.264</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Hexo/" rel="tag">Hexo</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Linux/" rel="tag">Linux</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/V4L2/" rel="tag">V4L2</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/WebSocket/" rel="tag">WebSocket</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/rkaiq/" rel="tag">rkaiq</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%8D%9A%E5%AE%A2/" rel="tag">博客</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0/" rel="tag">图像参数</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" rel="tag">摄像头</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" rel="tag">新人向</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" rel="tag">流媒体</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" rel="tag">视频编码</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" rel="tag">视频链路</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/GPIO/" rel="tag">GPIO</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/GitHub-Pages/" rel="tag">GitHub Pages</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/H-264/" rel="tag">H.264</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Hexo/" rel="tag">Hexo</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Linux/" rel="tag">Linux</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/MIPI/" rel="tag">MIPI</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ONVIF/" rel="tag">ONVIF</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/V4L2/" rel="tag">V4L2</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/WebSocket/" rel="tag">WebSocket</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ffmpeg/" rel="tag">ffmpeg</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/rkaiq/" rel="tag">rkaiq</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%8D%9A%E5%AE%A2/" rel="tag">博客</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0/" rel="tag">图像参数</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" rel="tag">摄像头</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" rel="tag">新人向</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" rel="tag">流媒体</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" rel="tag">视频编码</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" rel="tag">视频链路</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
     </div>
   </div>
 
@@ -5091,7 +5195,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">标签云</h3>
     <div class="widget tagcloud">
-      <a href="/tags/GPIO/" style="font-size: 10px;">GPIO</a> <a href="/tags/GStreamer/" style="font-size: 16.67px;">GStreamer</a> <a href="/tags/GitHub-Pages/" style="font-size: 10px;">GitHub Pages</a> <a href="/tags/H-264/" style="font-size: 10px;">H.264</a> <a href="/tags/Hexo/" style="font-size: 10px;">Hexo</a> <a href="/tags/ISP/" style="font-size: 13.33px;">ISP</a> <a href="/tags/Linux/" style="font-size: 10px;">Linux</a> <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/RV1126B/" style="font-size: 13.33px;">RV1126B</a> <a href="/tags/V4L2/" style="font-size: 13.33px;">V4L2</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/rkaiq/" style="font-size: 10px;">rkaiq</a> <a href="/tags/%E5%8D%9A%E5%AE%A2/" style="font-size: 10px;">博客</a> <a href="/tags/%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0/" style="font-size: 10px;">图像参数</a> <a href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" style="font-size: 20px;">嵌入式</a> <a href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" style="font-size: 10px;">摄像头</a> <a href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" style="font-size: 16.67px;">新人向</a> <a href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" style="font-size: 10px;">流媒体</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" style="font-size: 10px;">视频编码</a> <a href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" style="font-size: 10px;">视频链路</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 13.33px;">调试复盘</a>
+      <a href="/tags/GPIO/" style="font-size: 10px;">GPIO</a> <a href="/tags/GStreamer/" style="font-size: 16.67px;">GStreamer</a> <a href="/tags/GitHub-Pages/" style="font-size: 10px;">GitHub Pages</a> <a href="/tags/H-264/" style="font-size: 10px;">H.264</a> <a href="/tags/Hexo/" style="font-size: 10px;">Hexo</a> <a href="/tags/ISP/" style="font-size: 13.33px;">ISP</a> <a href="/tags/Linux/" style="font-size: 10px;">Linux</a> <a href="/tags/MIPI/" style="font-size: 10px;">MIPI</a> <a href="/tags/ONVIF/" style="font-size: 10px;">ONVIF</a> <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/RV1126B/" style="font-size: 16.67px;">RV1126B</a> <a href="/tags/V4L2/" style="font-size: 16.67px;">V4L2</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/ffmpeg/" style="font-size: 10px;">ffmpeg</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/rkaiq/" style="font-size: 10px;">rkaiq</a> <a href="/tags/%E5%8D%9A%E5%AE%A2/" style="font-size: 10px;">博客</a> <a href="/tags/%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0/" style="font-size: 10px;">图像参数</a> <a href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" style="font-size: 20px;">嵌入式</a> <a href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" style="font-size: 10px;">摄像头</a> <a href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" style="font-size: 16.67px;">新人向</a> <a href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" style="font-size: 10px;">流媒体</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" style="font-size: 10px;">视频编码</a> <a href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" style="font-size: 10px;">视频链路</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 13.33px;">调试复盘</a>
     </div>
   </div>
 
@@ -5113,6 +5217,10 @@
       <ul>
         
           <li>
+            <a href="/2026/11/10/2026-11-10-RV1126B%E8%A7%86%E9%A2%91%E9%80%9A%E9%81%93%E5%AE%9E%E6%88%98-MIPI%E4%B8%8EONVIF-%E6%8A%93%E5%9B%BE%E9%AA%8C%E6%B4%BB%E4%B8%8E%E5%BD%95%E5%83%8F%E5%91%BD%E4%BB%A4/">RV1126B 视频通道实战：v4l2 命令行抓图、录像与 MIPI/ONVIF 双路排查</a>
+          </li>
+        
+          <li>
             <a href="/2026/11/10/2026-11-10-RV1126B%E5%BC%80%E5%8F%91%E6%9D%BFGPIO%E5%AE%9E%E6%88%98sysfs%E7%82%B9%E7%81%AF/">RV1126B 开发板 GPIO 实战：从原理图丝印到 sysfs 点灯（附三个排坑案例）</a>
           </li>
         
@@ -5126,10 +5234,6 @@
         
           <li>
             <a href="/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/">从零搭一套 Hexo + GitHub Pages 博客，并做到一条命令发布</a>
-          </li>
-        
-          <li>
-            <a href="/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/">搞不清 V4L2、GStreamer、appsink？一篇讲透</a>
           </li>
         
       </ul>
