@@ -77,6 +77,211 @@
       <div class="outer">
         <section id="main">
   
+    <article id="post-2026-11-10-RV1126B开发板GPIO实战sysfs点灯" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2026/11/10/2026-11-10-RV1126B%E5%BC%80%E5%8F%91%E6%9D%BFGPIO%E5%AE%9E%E6%88%98sysfs%E7%82%B9%E7%81%AF/" class="article-date">
+  <time class="dt-published" datetime="2026-11-10T02:15:23.000Z" itemprop="datePublished">2026-11-10</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/%E5%AE%9E%E6%88%98%E9%A1%B9%E7%9B%AE/">实战项目</a>
+  </div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 itemprop="name">
+      <a class="p-name article-title" href="/2026/11/10/2026-11-10-RV1126B%E5%BC%80%E5%8F%91%E6%9D%BFGPIO%E5%AE%9E%E6%88%98sysfs%E7%82%B9%E7%81%AF/">RV1126B 开发板 GPIO 实战：从原理图丝印到 sysfs 点灯（附三个排坑案例）</a>
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>在 OK1126Bx-S（RV1126B）上做算法报警节点测试，需要一个能真正拉高拉低的 GPIO 接 LED。这件事落到 Linux 里只有几行 <code>echo</code>，真正费劲的是搞清楚该戳哪根针、往内核里写哪个号。本文记录从原理图选脚、编号换算、sysfs 操作到硬件排坑的完整过程。</p>
+<h2 id="一、先分清三套编号"><a href="#一、先分清三套编号" class="headerlink" title="一、先分清三套编号"></a>一、先分清三套编号</h2><p>同一个引脚有三套名字，这是最容易绕晕的地方：</p>
+<table>
+<thead>
+<tr>
+<th>编号体系</th>
+<th>长什么样</th>
+<th>用在哪</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>SoC 网络名</td>
+<td><code>GPIO0_D1</code>（bank+组+序号）</td>
+<td>原理图、板载丝印</td>
+</tr>
+<tr>
+<td>树莓派兼容号</td>
+<td><code>GPIO13</code>、<code>GPIO22</code></td>
+<td>排针丝印的绿色小字</td>
+</tr>
+<tr>
+<td>Linux sysfs 号</td>
+<td><code>25</code></td>
+<td>内核 <code>/sys/class/gpio</code>，写命令用</td>
+</tr>
+</tbody></table>
+<p>最大的坑：丝印印着 <code>GPIO13</code>，去 <code>export 13</code>——错。树莓派兼容号和 sysfs 号是两套独立编号，必须从 SoC 名换算。</p>
+<h2 id="二、sysfs-号怎么算"><a href="#二、sysfs-号怎么算" class="headerlink" title="二、sysfs 号怎么算"></a>二、sysfs 号怎么算</h2><p>内核不认识带字母的名字，RK 系列把所有 GPIO 平铺成连续整数：4 个 bank，每个 bank 32 个号，bank 内按 A&#x2F;B&#x2F;C&#x2F;D 四组切，每组 8 个：</p>
+<figure class="highlight mathematica"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="variable">sysfs</span> 号 <span class="operator">=</span> <span class="variable">bank</span> × <span class="number">32</span> <span class="operator">+</span> 组偏移 <span class="operator">+</span> 组内序号</span><br><span class="line">组偏移：<span class="variable">A</span><span class="operator">=</span><span class="number">0</span>，<span class="variable">B</span><span class="operator">=</span><span class="number">8</span>，<span class="built_in">C</span><span class="operator">=</span><span class="number">16</span>，<span class="built_in">D</span><span class="operator">=</span><span class="number">24</span></span><br></pre></td></tr></table></figure>
+
+<p>实测验证：</p>
+<table>
+<thead>
+<tr>
+<th>丝印名</th>
+<th>计算</th>
+<th>sysfs</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GPIO0_C7</td>
+<td>0×32 + 16 + 7</td>
+<td>23</td>
+</tr>
+<tr>
+<td>GPIO0_D1</td>
+<td>0×32 + 24 + 1</td>
+<td><strong>25</strong></td>
+</tr>
+<tr>
+<td>GPIO3_B7</td>
+<td>3×32 + 8 + 7</td>
+<td>111</td>
+</tr>
+<tr>
+<td>GPIO4_A0</td>
+<td>4×32 + 0 + 0</td>
+<td>128</td>
+</tr>
+</tbody></table>
+<p><code>/sys/class/gpio/</code> 下的 <code>gpiochip0/32/64/96/128</code> 就是各 bank 的起始号，算出的号落在哪个区间归哪个 chip 管，可交叉验证。</p>
+<h2 id="三、选脚：40-根针里只有-6-根能随便用"><a href="#三、选脚：40-根针里只有-6-根能随便用" class="headerlink" title="三、选脚：40 根针里只有 6 根能随便用"></a>三、选脚：40 根针里只有 6 根能随便用</h2><p>从原理图（OK1126Bx-S V1.1 第 6 页 P16）逐脚提取网络名后，能当「纯 GPIO」的实测结果：</p>
+<table>
+<thead>
+<tr>
+<th>排针脚号</th>
+<th>SoC 名</th>
+<th>sysfs</th>
+<th>状态</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>33</strong></td>
+<td>GPIO0_D1</td>
+<td><strong>25</strong></td>
+<td>✅ 首选，3.3V 域，实测通</td>
+</tr>
+<tr>
+<td>36</td>
+<td>GPIO3_B7</td>
+<td>111</td>
+<td>✅ 实测通</td>
+</tr>
+<tr>
+<td>13</td>
+<td>GPIO4_A0</td>
+<td>128</td>
+<td>✅ 实测通</td>
+</tr>
+<tr>
+<td>15</td>
+<td>GPIO0_C7</td>
+<td>23</td>
+<td>✅ 实测通</td>
+</tr>
+<tr>
+<td>16</td>
+<td>GPIO4_A1</td>
+<td>129</td>
+<td>理论可用，未实测</td>
+</tr>
+<tr>
+<td>7</td>
+<td>GPIO0_C6</td>
+<td>22</td>
+<td>理论可用，未实测</td>
+</tr>
+</tbody></table>
+<p>其余 34 根不能碰：1&#x2F;17&#x2F;2&#x2F;4 是电源（常供 3.3V&#x2F;5V），6&#x2F;9&#x2F;14&#x2F;20&#x2F;25&#x2F;30&#x2F;34&#x2F;39 是 GND，3&#x2F;5 被板载 RTC 同用的 I2C4 占，19&#x2F;21&#x2F;23&#x2F;24&#x2F;26 是 SPI1，8&#x2F;10 是 UART5，22&#x2F;29&#x2F;31&#x2F;32 是 CAN，18&#x2F;35 是摄像头复位&#x2F;掉电（一动 MIPI 摄像头就挂），37&#x2F;38&#x2F;40 是蓝牙唤醒。</p>
+<p>排针定位技巧：别从 1 数到 40，从丝印 <code>3V3</code> 端按行数，第 17 行就是 33&#x2F;34 脚，目标脚紧挨丝印字。</p>
+<h2 id="四、sysfs-四步操作"><a href="#四、sysfs-四步操作" class="headerlink" title="四、sysfs 四步操作"></a>四、sysfs 四步操作</h2><p>Linux 把 GPIO 操作包装成读写文本文件：<code>cat</code> 是读电平，<code>echo</code> 是写电平，内核直接动寄存器。</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># ① 挂出引脚，生成 /sys/class/gpio/gpio25/ 目录</span></span><br><span class="line"><span class="built_in">echo</span> 25 | <span class="built_in">sudo</span> <span class="built_in">tee</span> /sys/class/gpio/export</span><br><span class="line"></span><br><span class="line"><span class="comment"># ② 设为输出模式（默认输入，不设则写 value 无反应）</span></span><br><span class="line"><span class="built_in">echo</span> out | <span class="built_in">sudo</span> <span class="built_in">tee</span> /sys/class/gpio/gpio25/direction</span><br><span class="line"></span><br><span class="line"><span class="comment"># ③ 写电平：1 = 3.3V（灯亮），0 = 0V（灯灭）</span></span><br><span class="line"><span class="built_in">echo</span> 1 | <span class="built_in">sudo</span> <span class="built_in">tee</span> /sys/class/gpio/gpio25/value</span><br><span class="line"><span class="built_in">echo</span> 0 | <span class="built_in">sudo</span> <span class="built_in">tee</span> /sys/class/gpio/gpio25/value</span><br><span class="line"></span><br><span class="line"><span class="comment"># ④ 测完回收，目录消失</span></span><br><span class="line"><span class="built_in">echo</span> 25 | <span class="built_in">sudo</span> <span class="built_in">tee</span> /sys/class/gpio/unexport</span><br></pre></td></tr></table></figure>
+
+<p>接线：GPIO 脚 → LED 正极（长脚）→ LED 负极串 330Ω~1kΩ 电阻 → GND。</p>
+<h2 id="五、踩坑复盘（最有价值的部分）"><a href="#五、踩坑复盘（最有价值的部分）" class="headerlink" title="五、踩坑复盘（最有价值的部分）"></a>五、踩坑复盘（最有价值的部分）</h2><h3 id="坑-1：命令成功-≠-硬件动了"><a href="#坑-1：命令成功-≠-硬件动了" class="headerlink" title="坑 1：命令成功 ≠ 硬件动了"></a>坑 1：命令成功 ≠ 硬件动了</h3><p>实测中 26&#x2F;27 号（GPIO0_D2&#x2F;D3）：<code>export</code> 成功、<code>direction</code> 写入成功，唯独 <code>echo 1</code> 后 <code>cat value</code> 读回永远是 0——文件操作全部「看起来成功」，硬件根本没动。<strong>结论：写完必须读回验证</strong>：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">cat</span> /sys/class/gpio/gpio25/direction   <span class="comment"># 必须是 out</span></span><br><span class="line"><span class="built_in">cat</span> /sys/class/gpio/gpio25/value       <span class="comment"># 写 1 后必须是 1</span></span><br></pre></td></tr></table></figure>
+
+<p>读回 0 就别纠结，直接换脚。这也是「实测清单」比「理论清单」值钱的原因。</p>
+<h3 id="坑-2：unexport-后灯不灭"><a href="#坑-2：unexport-后灯不灭" class="headerlink" title="坑 2：unexport 后灯不灭"></a>坑 2：unexport 后灯不灭</h3><p><code>unexport</code> 之后 <code>gpio25/</code> 目录消失，但<strong>引脚保持退出前的输出高电平</strong>，LED 一直亮且此时已没有 value 可写。解法：重新 export 拉低；或者养成先写 <code>value 0</code> 再 unexport 的顺序。</p>
+<h3 id="坑-3：LED-不亮的三步定位"><a href="#坑-3：LED-不亮的三步定位" class="headerlink" title="坑 3：LED 不亮的三步定位"></a>坑 3：LED 不亮的三步定位</h3><ol>
+<li><strong>量电压</strong>：黑表笔接 GND，红表笔戳接线针脚。读到 3.3V 说明脚没找错；读不到多半是行数数错了（两排 20 行手工数错一两行太常见）。</li>
+<li><strong>验 LED</strong>：把 LED 挪到 1 脚（常供 3.3V）串同阻值电阻接 GND。亮 → LED 和电阻都是好的；不亮 → 先换 LED，别再查 GPIO。</li>
+<li><strong>查极性</strong>：直插 LED 长脚是正极接 GPIO。反接不亮但不烧。</li>
+</ol>
+<p>其他小坑：所有命令必须 <code>sudo</code>；<code>export</code> 报 <code>Device or resource busy</code> 说明脚被内核其他驱动占用，换脚；电阻 1kΩ 以上配老式红光 LED 会暗到像没亮，换 330Ω；「3.3V→LED→电阻→GPIO」的反向接法逻辑颠倒（写 0 亮写 1 灭）但不烧板。</p>
+<h2 id="六、验证结果"><a href="#六、验证结果" class="headerlink" title="六、验证结果"></a>六、验证结果</h2><p>33 脚（sysfs 25）接 LED 实测：<code>value</code> 写 1 读回 1，LED 亮；写 0 读回 0，LED 灭。25&#x2F;23&#x2F;111&#x2F;128 四个脚均通过 export → direction → value → 读回验证，可作为报警输出使用。</p>
+<p>进阶用法：在「一切皆设备」的算法平台上，把 GPIO 报警建模为设备节点（属性 <code>gpio_num=25</code>），流程编排里把 YOLO 检测的命中结果接到报警节点——算法识别到目标 → hit&#x3D;true → 灯亮约 0.85 秒自动熄灭，网页上点一下按钮，落到板子上就是第四节那几行 echo。</p>
+<h2 id="小结"><a href="#小结" class="headerlink" title="小结"></a>小结</h2><table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>动作</th>
+<th>关键判据</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>选脚</td>
+<td>原理图找纯 GPIO 网络名</td>
+<td>避开电源&#x2F;地&#x2F;复用脚</td>
+</tr>
+<tr>
+<td>换算</td>
+<td>bank×32 + 组偏移 + 序号</td>
+<td>GPIO0_D1 → 25</td>
+</tr>
+<tr>
+<td>操作</td>
+<td>export → direction → value → unexport</td>
+<td>全程 sudo</td>
+</tr>
+<tr>
+<td>验证</td>
+<td>读回 value + 万用表量脚</td>
+<td>命令成功 ≠ 硬件动</td>
+</tr>
+<tr>
+<td>排坑</td>
+<td>3V3 验 LED → 量针脚 → 查极性</td>
+<td>先隔离硬件再怀疑软件</td>
+</tr>
+</tbody></table>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://cuishili-git.github.io/2026/11/10/2026-11-10-RV1126B%E5%BC%80%E5%8F%91%E6%9D%BFGPIO%E5%AE%9E%E6%88%98sysfs%E7%82%B9%E7%81%AF/" data-id="cuidvSglgE689iGF2w13Li2ZH" data-title="RV1126B 开发板 GPIO 实战：从原理图丝印到 sysfs 点灯（附三个排坑案例）" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/GPIO/" rel="tag">GPIO</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Linux/" rel="tag">Linux</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li></ul>
+
+    </footer>
+  </div>
+  
+</article>
+
+
+
+  
     <article id="post-2026-11-07-ISP图像参数调整-从rkaiq接管到前端调色" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
   <div class="article-meta">
     <a href="/2026/11/07/2026-11-07-ISP%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0%E8%B0%83%E6%95%B4-%E4%BB%8Erkaiq%E6%8E%A5%E7%AE%A1%E5%88%B0%E5%89%8D%E7%AB%AF%E8%B0%83%E8%89%B2/" class="article-date">
@@ -512,7 +717,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-ISP%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0%E8%B0%83%E6%95%B4-%E4%BB%8Erkaiq%E6%8E%A5%E7%AE%A1%E5%88%B0%E5%89%8D%E7%AB%AF%E8%B0%83%E8%89%B2/" data-id="cuid9wQdmC2UnUK6pmQ-9s87Z" data-title="ISP 图像参数调整：从 rkaiq 接管到前端调色" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-ISP%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0%E8%B0%83%E6%95%B4-%E4%BB%8Erkaiq%E6%8E%A5%E7%AE%A1%E5%88%B0%E5%89%8D%E7%AB%AF%E8%B0%83%E8%89%B2/" data-id="cuidDMUEyY61fSUX22EGNVgkL" data-title="ISP 图像参数调整：从 rkaiq 接管到前端调色" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -1190,7 +1395,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%B5%81%E5%AA%92%E4%BD%93%E5%9B%9B%E5%8F%82%E6%95%B0-%E5%88%86%E8%BE%A8%E7%8E%87%E5%B8%A7%E7%8E%87%E7%A0%81%E7%8E%87GOP%E8%AE%B2%E6%B8%85%E6%A5%9A/" data-id="cuidQUJDWsCGpq-SJA_priZYm" data-title="分辨率、帧率、码率、GOP：视频参数一次讲明白" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%B5%81%E5%AA%92%E4%BD%93%E5%9B%9B%E5%8F%82%E6%95%B0-%E5%88%86%E8%BE%A8%E7%8E%87%E5%B8%A7%E7%8E%87%E7%A0%81%E7%8E%87GOP%E8%AE%B2%E6%B8%85%E6%A5%9A/" data-id="cuid4XfLtV3Pxbg7IvJXviCN1" data-title="分辨率、帧率、码率、GOP：视频参数一次讲明白" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -2058,7 +2263,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/" data-id="cuidu6yvjlVwg9xUrVRm-D_qw" data-title="从零搭一套 Hexo + GitHub Pages 博客，并做到一条命令发布" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/" data-id="cuidoq5qkog_2g2FGM3wiD1J-" data-title="从零搭一套 Hexo + GitHub Pages 博客，并做到一条命令发布" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -2612,7 +2817,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/" data-id="cuidXH0zV3IJttYxoVhRqpxyy" data-title="搞不清 V4L2、GStreamer、appsink？一篇讲透" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/" data-id="cuid-C4B7p2u9kY7R9X7sMSqU" data-title="搞不清 V4L2、GStreamer、appsink？一篇讲透" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -4148,7 +4353,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidvNDW7uatQn7D_CBGrqrE9" data-title="摄像头开发入门：从一台陌生设备，到浏览器里出画面" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuid28ph_Lizpf_IzxDjotz8s" data-title="摄像头开发入门：从一台陌生设备，到浏览器里出画面" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -4700,7 +4905,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidARIEnveskN-HzmCKlmjFB" data-title="从摄像头到网页：一次完整的视频链路拆解" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF%E5%85%A8%E6%B5%81%E7%A8%8B-%E4%BB%8E%E6%91%84%E5%83%8F%E5%A4%B4%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidUlaRJ5ZrA7aMz1-8lq8d8" data-title="从摄像头到网页：一次完整的视频链路拆解" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -4842,7 +5047,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" data-id="cuidhc5DwRMZ2BXUsvGBqdN5v" data-title="我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/02/2026-11-02-%E7%85%A7%E7%89%87%E5%9E%8BPDF%E7%BF%BB%E8%AF%91%E5%99%A8%E5%AE%9E%E6%88%98/" data-id="cuid4oD75JzB1K7C7gWPYoTW_" data-title="我用 PyQt6 + 视觉大模型做了一个照片型 PDF 翻译器（附三个调试深坑复盘）" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -4876,7 +5081,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">标签</h3>
     <div class="widget">
-      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/GitHub-Pages/" rel="tag">GitHub Pages</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/H-264/" rel="tag">H.264</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Hexo/" rel="tag">Hexo</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/V4L2/" rel="tag">V4L2</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/WebSocket/" rel="tag">WebSocket</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/rkaiq/" rel="tag">rkaiq</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%8D%9A%E5%AE%A2/" rel="tag">博客</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0/" rel="tag">图像参数</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" rel="tag">摄像头</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" rel="tag">新人向</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" rel="tag">流媒体</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" rel="tag">视频编码</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" rel="tag">视频链路</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/GPIO/" rel="tag">GPIO</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/GitHub-Pages/" rel="tag">GitHub Pages</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/H-264/" rel="tag">H.264</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Hexo/" rel="tag">Hexo</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Linux/" rel="tag">Linux</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/V4L2/" rel="tag">V4L2</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/WebSocket/" rel="tag">WebSocket</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/rkaiq/" rel="tag">rkaiq</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%8D%9A%E5%AE%A2/" rel="tag">博客</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0/" rel="tag">图像参数</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" rel="tag">摄像头</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" rel="tag">新人向</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" rel="tag">流媒体</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" rel="tag">视频编码</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" rel="tag">视频链路</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li></ul>
     </div>
   </div>
 
@@ -4886,7 +5091,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">标签云</h3>
     <div class="widget tagcloud">
-      <a href="/tags/GStreamer/" style="font-size: 20px;">GStreamer</a> <a href="/tags/GitHub-Pages/" style="font-size: 10px;">GitHub Pages</a> <a href="/tags/H-264/" style="font-size: 10px;">H.264</a> <a href="/tags/Hexo/" style="font-size: 10px;">Hexo</a> <a href="/tags/ISP/" style="font-size: 15px;">ISP</a> <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/RV1126B/" style="font-size: 10px;">RV1126B</a> <a href="/tags/V4L2/" style="font-size: 15px;">V4L2</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/rkaiq/" style="font-size: 10px;">rkaiq</a> <a href="/tags/%E5%8D%9A%E5%AE%A2/" style="font-size: 10px;">博客</a> <a href="/tags/%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0/" style="font-size: 10px;">图像参数</a> <a href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" style="font-size: 20px;">嵌入式</a> <a href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" style="font-size: 10px;">摄像头</a> <a href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" style="font-size: 20px;">新人向</a> <a href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" style="font-size: 10px;">流媒体</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" style="font-size: 10px;">视频编码</a> <a href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" style="font-size: 10px;">视频链路</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 15px;">调试复盘</a>
+      <a href="/tags/GPIO/" style="font-size: 10px;">GPIO</a> <a href="/tags/GStreamer/" style="font-size: 16.67px;">GStreamer</a> <a href="/tags/GitHub-Pages/" style="font-size: 10px;">GitHub Pages</a> <a href="/tags/H-264/" style="font-size: 10px;">H.264</a> <a href="/tags/Hexo/" style="font-size: 10px;">Hexo</a> <a href="/tags/ISP/" style="font-size: 13.33px;">ISP</a> <a href="/tags/Linux/" style="font-size: 10px;">Linux</a> <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/RV1126B/" style="font-size: 13.33px;">RV1126B</a> <a href="/tags/V4L2/" style="font-size: 13.33px;">V4L2</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/rkaiq/" style="font-size: 10px;">rkaiq</a> <a href="/tags/%E5%8D%9A%E5%AE%A2/" style="font-size: 10px;">博客</a> <a href="/tags/%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0/" style="font-size: 10px;">图像参数</a> <a href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" style="font-size: 20px;">嵌入式</a> <a href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" style="font-size: 10px;">摄像头</a> <a href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" style="font-size: 16.67px;">新人向</a> <a href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" style="font-size: 10px;">流媒体</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" style="font-size: 10px;">视频编码</a> <a href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" style="font-size: 10px;">视频链路</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 13.33px;">调试复盘</a>
     </div>
   </div>
 
@@ -4908,6 +5113,10 @@
       <ul>
         
           <li>
+            <a href="/2026/11/10/2026-11-10-RV1126B%E5%BC%80%E5%8F%91%E6%9D%BFGPIO%E5%AE%9E%E6%88%98sysfs%E7%82%B9%E7%81%AF/">RV1126B 开发板 GPIO 实战：从原理图丝印到 sysfs 点灯（附三个排坑案例）</a>
+          </li>
+        
+          <li>
             <a href="/2026/11/07/2026-11-07-ISP%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0%E8%B0%83%E6%95%B4-%E4%BB%8Erkaiq%E6%8E%A5%E7%AE%A1%E5%88%B0%E5%89%8D%E7%AB%AF%E8%B0%83%E8%89%B2/">ISP 图像参数调整：从 rkaiq 接管到前端调色</a>
           </li>
         
@@ -4921,10 +5130,6 @@
         
           <li>
             <a href="/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/">搞不清 V4L2、GStreamer、appsink？一篇讲透</a>
-          </li>
-        
-          <li>
-            <a href="/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/">摄像头开发入门：从一台陌生设备，到浏览器里出画面</a>
           </li>
         
       </ul>
