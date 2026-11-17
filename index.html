@@ -77,6 +77,559 @@
       <div class="outer">
         <section id="main">
   
+    <article id="post-2026-11-17-线路监测平台源码地图与分层设计" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2026/11/17/2026-11-17-%E7%BA%BF%E8%B7%AF%E7%9B%91%E6%B5%8B%E5%B9%B3%E5%8F%B0%E6%BA%90%E7%A0%81%E5%9C%B0%E5%9B%BE%E4%B8%8E%E5%88%86%E5%B1%82%E8%AE%BE%E8%AE%A1/" class="article-date">
+  <time class="dt-published" datetime="2026-11-17T06:23:45.000Z" itemprop="datePublished">2026-11-17</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/%E5%AE%9E%E6%88%98%E9%A1%B9%E7%9B%AE/">实战项目</a>
+  </div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 itemprop="name">
+      <a class="p-name article-title" href="/2026/11/17/2026-11-17-%E7%BA%BF%E8%B7%AF%E7%9B%91%E6%B5%8B%E5%B9%B3%E5%8F%B0%E6%BA%90%E7%A0%81%E5%9C%B0%E5%9B%BE%E4%B8%8E%E5%88%86%E5%B1%82%E8%AE%BE%E8%AE%A1/">线路在线监测平台源码地图：1.4 万行代码怎么分层，新手从哪读起</a>
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <p>这个项目最终跑在一台飞凌 OK1126B-S 开发板（RV1126B，aarch64）上，做的事很具体：接一路 MIPI 摄像头，把画面推到网页上实时看，同时每隔一段时间用 NPU 跑一次 YOLO 检测，命中目标就点亮一个 GPIO 报警。</p>
+<p>代码量不大，但第一次打开目录很容易迷路——46 个头文件、5 个独立进程、4 个数据库表族、1 个 Vue3 前端。这篇先把地图画清楚：谁是入口、谁只能单向依赖谁、一次点击从浏览器走到硬件要经过哪几层。</p>
+<h2 id="一、先记住三台机器"><a href="#一、先记住三台机器" class="headerlink" title="一、先记住三台机器"></a>一、先记住三台机器</h2><table>
+<thead>
+<tr>
+<th>角色</th>
+<th>位置</th>
+<th>装什么</th>
+<th>你在这上面干什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>开发机</td>
+<td>Windows</td>
+<td>前端源码 <code>vue3/</code>、后端源码副本</td>
+<td>改代码、看报错、写页面</td>
+</tr>
+<tr>
+<td>编译机</td>
+<td>Ubuntu VM（<code>~/forlinx/my</code>）</td>
+<td>交叉工具链 + 全部后端源码 + 飞凌 SDK</td>
+<td>编译出 aarch64 二进制</td>
+</tr>
+<tr>
+<td>板子</td>
+<td>192.168.1.232</td>
+<td>只有二进制、前端 dist、数据库、日志</td>
+<td>跑、验收、看日志</td>
+</tr>
+</tbody></table>
+<p><strong>没有在板子上编译这回事</strong>。板子上的 8G eMMC 只有 3 个 G 可用，编译一次 GStreamer 相关代码要 20 分钟以上，所以一切二进制都在 VM 上交叉编译好，scp 推过去。这条规矩定死了，后面所有流程都围绕它。</p>
+<h2 id="二、板上实际跑着-5-个进程"><a href="#二、板上实际跑着-5-个进程" class="headerlink" title="二、板上实际跑着 5 个进程"></a>二、板上实际跑着 5 个进程</h2><figure class="highlight mathematica"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="operator">/</span><span class="variable">etc</span><span class="operator">/</span><span class="variable">init</span><span class="operator">.</span><span class="variable">d</span><span class="operator">/</span><span class="variable">S46watchdogd</span>   ← 开机唯一入口，拉起下面 <span class="number">4</span> 个 <span class="operator">+</span> 自己</span><br><span class="line">   ├─ <span class="type">aiq_paramd</span>      <span class="variable">ISP</span><span class="operator">/</span><span class="number">3</span><span class="variable">A</span> 参数守护（<span class="built_in">C</span>，<span class="number">850</span> 行）   负责曝光<span class="operator">/</span>增益<span class="operator">/</span>白平衡<span class="operator">/</span>镜像</span><br><span class="line">   ├─ <span class="type">device_platform</span> 主平台（<span class="built_in">C</span><span class="operator">++</span>，<span class="number">11000</span> 行）        <span class="variable">HTTP</span> <span class="operator">+</span> 推流 <span class="operator">+</span> 流程引擎 <span class="operator">+</span> 抓图</span><br><span class="line">   ├─ <span class="type">rknn_inferd</span>     <span class="variable">NPU</span> 推理进程（<span class="built_in">C</span><span class="operator">++</span>，<span class="number">732</span> 行）    独立进程，只认 <span class="variable">unix</span> <span class="variable">socket</span></span><br><span class="line">   └─ <span class="variable">recordd</span>         录像进程（<span class="built_in">C</span>，<span class="number">199</span> 行）          数据面独立，不挂主推流</span><br></pre></td></tr></table></figure>
+
+<p>为什么把推理拆成独立进程？因为 RKNN 的 NPU 上下文一旦崩了会把整个进程带走。2026-11 之前推理还在主平台里，模型一异常整个网页就 502。拆出去之后 <code>rknn_inferd</code> 挂了只是算法报警失效，看视频不受影响，watchdog 会单独把它拉回来。</p>
+<p>为什么 3A 是独立守护？<code>rkaiq</code> 的 API 不是线程安全的，而且它的初始化要等 ISP 媒体图建好。混在业务进程里，一重启业务进程就得重走一遍 ISP 初始化，中间黑屏 10 秒。分开之后参数调整是”发命令”，不碰业务。</p>
+<h2 id="三、主平台的分层：三层单向依赖"><a href="#三、主平台的分层：三层单向依赖" class="headerlink" title="三、主平台的分层：三层单向依赖"></a>三、主平台的分层：三层单向依赖</h2><p>这是整套代码最重要的设计，理解了它就不会写错代码：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">① 接入层   app/routes/*.hpp        ── 只认识 HTTP：取参、鉴权、序列化</span><br><span class="line">② 门面层   core/hook.hpp (IHook)   ── 平台唯一接口：list/get/create/update/remove/call</span><br><span class="line">③ 实现层   app/hook_impl.hpp       ── 唯一实现，知道数据库长什么样</span><br><span class="line">              ├─→ core/device_manager.hpp   设备管理唯一入口（配置缓存 + 属性 + 控制分派）</span><br><span class="line">              │       └─→ core/worker_manager.hpp  按 impl_class 懒加载实现类</span><br><span class="line">              │               └─→ workers/xxx/*_worker.hpp  纯协议/业务实现</span><br><span class="line">              └─→ core/db_manager.hpp       唯一数据访问层（全部 SQL 在这里）</span><br></pre></td></tr></table></figure>
+
+<p>三条铁律，违反了代码就会被 review 打回：</p>
+<ol>
+<li><strong>路由文件里不许出现 SQL、表名、模型</strong>。只能 <code>hook().call(&quot;device.control&quot;, args)</code>。</li>
+<li><strong>worker 实现类里不许出现 <code>DbManager</code></strong>。要读配置就用 <code>dc.attr(&quot;ip&quot;)</code>，要写状态就用 <code>dc.set_attr()</code>。</li>
+<li><strong><code>DbManager</code> 只被 <code>DeviceManager</code> 和 <code>hook_impl</code> 使用</strong>。</li>
+</ol>
+<p>好处是具体的：换数据源只改一个文件；单元测试装个假 hook 就能跑路由；新人改业务只碰 <code>hook_impl.hpp</code>，不会误伤 HTTP 层。</p>
+<h2 id="四、目录速查（按你真正会改的频率排序）"><a href="#四、目录速查（按你真正会改的频率排序）" class="headerlink" title="四、目录速查（按你真正会改的频率排序）"></a>四、目录速查（按你真正会改的频率排序）</h2><figure class="highlight stylus"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br></pre></td><td class="code"><pre><span class="line">backend/<span class="attribute">src</span>/</span><br><span class="line">├── <span class="selector-tag">main</span><span class="selector-class">.cpp</span>                      <span class="number">287</span> 行  ★ 程序入口，只做装配，不含业务</span><br><span class="line">├── app/</span><br><span class="line">│   ├── hook_impl<span class="selector-class">.hpp</span>             <span class="number">441</span> 行  ★ IHook 实现：实体注册 + <span class="number">7</span> 个业务动作</span><br><span class="line">│   ├── flow_engine<span class="selector-class">.hpp</span>           <span class="number">344</span> 行  ★ 流程引擎：模板渲染 + 定时调度 + 执行</span><br><span class="line">│   ├── snapshot_service<span class="selector-class">.hpp</span>      <span class="number">293</span> 行  ★ 抓图服务：H.<span class="number">264</span> → <span class="number">640</span>×<span class="number">640</span> RGB → dma-buf</span><br><span class="line">│   ├── algorithm_routes<span class="selector-class">.hpp</span>      <span class="number">145</span> 行    模型上传 / 流程手动触发</span><br><span class="line">│   ├── upgrade<span class="selector-class">.hpp</span>               <span class="number">182</span> 行    V*<span class="selector-class">.sql</span> 版本化升级</span><br><span class="line">│   └── routes/                            <span class="built_in">CRUD</span>(<span class="number">67</span>) <span class="built_in">control</span>(<span class="number">75</span>) <span class="built_in">device</span>(<span class="number">48</span>) <span class="built_in">stream</span>(<span class="number">197</span>) ...</span><br><span class="line">├── core/</span><br><span class="line">│   ├── stream_hub<span class="selector-class">.hpp</span>            <span class="number">856</span> 行  ★ 媒体唯一入口：GStreamer 管线 + 多观众分发</span><br><span class="line">│   ├── models<span class="selector-class">.hpp</span>                <span class="number">801</span> 行    <span class="number">14</span> 张表的 C++ 结构体 + CREATE TABLE</span><br><span class="line">│   ├── osd_service<span class="selector-class">.hpp</span>           <span class="number">600</span> 行    OSD 叠加（RGA 硬件 blend + FreeType）</span><br><span class="line">│   ├── device_manager<span class="selector-class">.hpp</span>        <span class="number">536</span> 行  ★ 配置缓存 + 属性读写 + 控制分派</span><br><span class="line">│   ├── minihttp<span class="selector-class">.hpp</span>              <span class="number">396</span> 行    极简 HTTP 服务器（零依赖，自己写）</span><br><span class="line">│   ├── db_manager<span class="selector-class">.hpp</span>            <span class="number">310</span> 行  ★ 唯一数据访问层</span><br><span class="line">│   ├── ws<span class="selector-class">.hpp</span>                    <span class="number">281</span> 行    WebSocket 服务端 + 每连接发送线程</span><br><span class="line">│   ├── worker_manager<span class="selector-class">.hpp</span>        <span class="number">215</span> 行  ★ 实现类注册表 + 懒加载</span><br><span class="line">│   ├── dma_frame<span class="selector-class">.hpp</span>             <span class="number">103</span> 行    dma-buf 帧池（跨进程传帧的关键）</span><br><span class="line">│   └── infer_client<span class="selector-class">.hpp</span>           <span class="number">79</span> 行    unix socket + SCM_RIGHTS 传 fd</span><br><span class="line">└── workers/</span><br><span class="line">    ├── onvif/                   <span class="number">1266</span> 行   ONVIF 摄像头（发现/RTSP 地址/PTZ）</span><br><span class="line">    ├── yolo_region/              <span class="number">354</span> 行  ★ YOLO + 区域判定算法产品</span><br><span class="line">    ├── mipi/                     <span class="number">285</span> 行   MIPI 直连摄像头</span><br><span class="line">    ├── algorithm/                <span class="number">210</span> 行   通用算法产品（调外部推理）</span><br><span class="line">    └── gpio/                     <span class="number">259</span> 行   GPIO 报警设备</span><br></pre></td></tr></table></figure>
+
+<p>前端 <code>vue3/src</code> 约 4400 行，10 个页面 + 3 个组件，最大的 <code>H264Player.vue</code> 549 行（WebSocket 收流 + MSE 解码）。</p>
+<h2 id="五、三张数据流，看懂就懂-80"><a href="#五、三张数据流，看懂就懂-80" class="headerlink" title="五、三张数据流，看懂就懂 80%"></a>五、三张数据流，看懂就懂 80%</h2><h3 id="流-1：网页改一个参数（配置类）"><a href="#流-1：网页改一个参数（配置类）" class="headerlink" title="流 1：网页改一个参数（配置类）"></a>流 1：网页改一个参数（配置类）</h3><figure class="highlight dns"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">浏览器 PUT /api/video-images/abc</span><br><span class="line">  → routes/crud.hpp           只做三件事：取 body、调 hook、回包</span><br><span class="line">  → hook<span class="punctuation">(</span><span class="punctuation">)</span>.update<span class="punctuation">(</span><span class="string">&quot;video_image&quot;</span>, <span class="string">&quot;abc&quot;</span>, body<span class="punctuation">)</span></span><br><span class="line">  → PlatformHook<span class="number">::</span>update<span class="punctuation">(</span><span class="punctuation">)</span>    实体名查注册表 → 拿到 EntityOps</span><br><span class="line">  → DbManager<span class="number">::</span>update&lt;VideoImage&gt;<span class="punctuation">(</span><span class="punctuation">)</span>  拼 UPDATE，写线程串行执行</span><br><span class="line">  → DeviceManager<span class="number">::</span>reload<span class="punctuation">(</span><span class="punctuation">)</span>   配置缓存整刷（下次读走内存，零 SQL）</span><br></pre></td></tr></table></figure>
+
+<p>配置类表（产品、设备、通道、码流）全部常住内存，<code>DeviceManager::load()</code> 在启动时一次性读进来。之后所有 list 接口都是内存过滤，不走数据库——这是网页秒开的原因。</p>
+<h3 id="流-2：网页看实时视频"><a href="#流-2：网页看实时视频" class="headerlink" title="流 2：网页看实时视频"></a>流 2：网页看实时视频</h3><figure class="highlight dns"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">浏览器 new WebSocket<span class="punctuation">(</span>&#x27;/api/stream/&lt;channel&gt;/&lt;stream&gt;&#x27;<span class="punctuation">)</span></span><br><span class="line">  → routes/stream_routes.hpp  握手，取通道/码流配置</span><br><span class="line">  → medi<span class="number">a::</span>Hu<span class="number">b::ac</span>quire<span class="punctuation">(</span>spec<span class="punctuation">)</span> 同 <span class="keyword">key</span> 复用，多人共享一条管线</span><br><span class="line">  → Stream<span class="number">::</span>loop<span class="punctuation">(</span><span class="punctuation">)</span>            独立线程拉 appsink</span><br><span class="line">       ├─ 文本帧 &#123;<span class="string">&quot;type&quot;</span>:<span class="string">&quot;init&quot;</span>,<span class="string">&quot;codec&quot;</span>:<span class="string">&quot;avc1.640028&quot;</span>,<span class="string">&quot;width&quot;</span>:<span class="number">2112</span>,...&#125;</span><br><span class="line">       └─ 二进制帧 [<span class="number">1</span>B flag][<span class="number">8</span>B pts][Annex B H.<span class="number">264</span>]</span><br><span class="line">  → ws<span class="number">::C</span>onn<span class="number">::e</span>nqueue<span class="punctuation">(</span><span class="punctuation">)</span>       每连接一个有界队列，推流线程只入队不发送</span><br><span class="line">  → 浏览器 jmuxer 转 fMP4 → MSE 播放</span><br></pre></td></tr></table></figure>
+
+<p>关键点：<strong>推流线程绝不直接 send</strong>。2026-11-10 排查了一整天的”看十几分钟就花屏”，根因就是早期版本在推流线程里对每个观众阻塞 send——任何一个观众卡顿（切标签页、WiFi 抖动），推流线程就停在 send 上，共享的 appsink 开始丢编码帧，丢掉的是别人的参考帧，于是所有观众一起花屏。现在每个连接一条发送线程 + 4MB 有界队列，超限只踢那一个连接。</p>
+<h3 id="流-3：定时跑一次算法（流程）"><a href="#流-3：定时跑一次算法（流程）" class="headerlink" title="流 3：定时跑一次算法（流程）"></a>流 3：定时跑一次算法（流程）</h3><figure class="highlight dns"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br></pre></td><td class="code"><pre><span class="line">FlowEngine 调度线程（每 <span class="number">1</span> 秒扫一遍 tki_flow）</span><br><span class="line">  → trigger_type=interval，到点 fire<span class="punctuation">(</span><span class="punctuation">)</span></span><br><span class="line">  → FlowEngin<span class="number">e::</span>run<span class="punctuation">(</span>flow_id<span class="punctuation">)</span>   按 sort_index 顺序执行节点</span><br><span class="line">  → 节点 <span class="number">1</span>：算法设备 yolo_region</span><br><span class="line">       ├─ params 里没有 detections、没有 dma_fd</span><br><span class="line">       ├─ 自己按 bind_device_id 调 hook<span class="punctuation">(</span><span class="punctuation">)</span>.call<span class="punctuation">(</span><span class="string">&quot;device.control&quot;</span>, &#123;cmd:<span class="string">&quot;snapshot&quot;</span>&#125;<span class="punctuation">)</span></span><br><span class="line">       ├─ snapshot_service：从 Stream 缓存的 H.<span class="number">264</span> AU 起临时解码管线</span><br><span class="line">       │    → videoscale add-borders=true → <span class="number">640</span>×<span class="number">640</span> RGB → memcpy 进 dma-buf</span><br><span class="line">       ├─ infer<span class="number">::ca</span>ll<span class="punctuation">(</span>req, dma_fd<span class="punctuation">)</span>   unix socket + SCM_RIGHTS 把 fd 传给 rknn_inferd</span><br><span class="line">       └─ 拿到框 → 按标签过滤 → 按得分过滤 → 区域重叠 → exclude → hit</span><br><span class="line">  → &#123;&#123;prev.count&#125;&#125; 之类模板变量把结果传给下一个节点</span><br><span class="line">  → 节点 <span class="number">2</span>：GPIO 报警设备，hit=true 就点灯 <span class="number">1</span> 秒</span><br><span class="line">  → 全过程写 tki_flow_run，网页「运行日志」能看到每步 JSON 和抓图缩略图</span><br></pre></td></tr></table></figure>
+
+<p>划重点：<strong>算法设备自己截图</strong>，不再需要在流程里拖一个”摄像头截图”节点。这是 2026-11-10 的简化，减少一次人工配置错误的机会。</p>
+<h2 id="六、四个”反直觉但必须这样”的设计"><a href="#六、四个”反直觉但必须这样”的设计" class="headerlink" title="六、四个”反直觉但必须这样”的设计"></a>六、四个”反直觉但必须这样”的设计</h2><table>
+<thead>
+<tr>
+<th>设计</th>
+<th>直觉做法</th>
+<th>实际做法</th>
+<th>为什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>传帧给推理进程</td>
+<td>传内存指针 &#x2F; 传整帧字节</td>
+<td>传 dma-buf fd（<code>SCM_RIGHTS</code>）</td>
+<td>指针跨进程无效；传 1.2MB 字节每帧多一次拷贝，NPU 还得再拷一次</td>
+</tr>
+<tr>
+<td>打开 MySQL 式的连接池</td>
+<td>每请求建连接</td>
+<td>单例 + 读线程&#x2F;写线程各一条队列</td>
+<td>SQLite WAL 下写必须串行，加连接只会撞 SQLITE_BUSY</td>
+</tr>
+<tr>
+<td>实时视频用 RTSP</td>
+<td>起 rtsp 服务端</td>
+<td>直接 WebSocket 发裸 H.264</td>
+<td>板子没装 mediamtx，浏览器也不认裸 RTP；WS 一条通道同时能发 JSON 控制消息</td>
+</tr>
+<tr>
+<td>结构变更</td>
+<td>改 <code>CREATE TABLE</code></td>
+<td>只改基线 DDL，增量放 <code>sql/upgrade/V0xx.sql</code></td>
+<td>现场板子的库里有数据，重建表就全丢了；版本表记账可以反复执行</td>
+</tr>
+</tbody></table>
+<h2 id="七、给你的阅读顺序"><a href="#七、给你的阅读顺序" class="headerlink" title="七、给你的阅读顺序"></a>七、给你的阅读顺序</h2><p>不要从头读。按这个顺序，每步都能跑起来验证：</p>
+<ol>
+<li><code>main.cpp</code> —— 只看 113~213 行，看清楚启动顺序：开库 → 建表 → 升级 → 装 hook → 注册路由 → 监听。</li>
+<li>打开网页点一次「设备列表」，对照 <code>routes/crud.hpp</code> → <code>hook_impl.hpp::list</code> → <code>device_manager.hpp::rows</code>，把这条链路走通。</li>
+<li>读 <code>core/entity.hpp</code> 和 <code>hook_impl.hpp::register_default_entities()</code>，理解”实体名 → 表”是怎么注册的。</li>
+<li>读 <code>workers/gpio/gpio_worker.hpp</code>（259 行，最短的实现类），理解 <code>invoke()</code> 这个唯一入口。</li>
+<li>读 <code>app/flow_engine.hpp::run()</code>，理解流程节点怎么变成 <code>hook().call(&quot;device.control&quot;)</code>。</li>
+<li>读 <code>workers/yolo_region/yolo_region_worker.hpp</code>，理解算法产品的四步判定。</li>
+<li>最后才碰 <code>core/stream_hub.hpp</code>（856 行，最难）和 <code>core/osd_service.hpp</code>（600 行，涉及 RGA 和 ISP）。</li>
+</ol>
+<p>前 6 步都是纯业务逻辑加 SQL，不需要懂 GStreamer、不需要懂 NPU、不需要懂 ISP。<strong>这是刻意的</strong>：这套代码的分层就是为了让 80% 的需求不需要碰那 20% 的硬骨头。</p>
+<p>下一篇会把上面第 1、4、5、6 步对应的函数逐个拆开讲，配上真实代码和踩坑理由。</p>
+<h2 id="附录-A：每个源码文件是干什么的"><a href="#附录-A：每个源码文件是干什么的" class="headerlink" title="附录 A：每个源码文件是干什么的"></a>附录 A：每个源码文件是干什么的</h2><p>VS Code 打开 <code>backend/src</code> 会看到一堆文件，先说一句：<strong>凡是带 <code>.bak_xxx</code> 后缀的都是历史备份</strong>（改坏过一次的留底），不参与编译，确认稳定后可以删。真正有效的文件就下面这些，每个文件开头的注释块写的就是它的职责，这里给你翻译成大白话。</p>
+<h3 id="入口与装配（1-个文件）"><a href="#入口与装配（1-个文件）" class="headerlink" title="入口与装配（1 个文件）"></a>入口与装配（1 个文件）</h3><table>
+<thead>
+<tr>
+<th>文件</th>
+<th>行数</th>
+<th>干什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>main.cpp</code></td>
+<td>287</td>
+<td>程序入口。只做装配：开库 → 建表 → 跑 SQL 升级 → 装 hook → 注册路由 → 监听 8080。不含业务逻辑，113~213 行是启动顺序</td>
+</tr>
+</tbody></table>
+<h3 id="app-——-接入层与平台级服务（12-个文件）"><a href="#app-——-接入层与平台级服务（12-个文件）" class="headerlink" title="app&#x2F; —— 接入层与平台级服务（12 个文件）"></a>app&#x2F; —— 接入层与平台级服务（12 个文件）</h3><table>
+<thead>
+<tr>
+<th>文件</th>
+<th>行数</th>
+<th>干什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>hook_impl.hpp</code></td>
+<td>441</td>
+<td>★ IHook 的唯一实现。所有路由的最终归宿，认识数据库和设备管理。加新业务动作就改这里</td>
+</tr>
+<tr>
+<td><code>flow_engine.hpp</code></td>
+<td>344</td>
+<td>★ 流程引擎。每秒扫一遍流程表，到点就按节点顺序执行，用 <code>&#123;&#123;prev.xxx&#125;&#125;</code> 模板把上一步结果传给下一步</td>
+</tr>
+<tr>
+<td><code>snapshot_service.hpp</code></td>
+<td>293</td>
+<td>★ 抓图服务。从推流管线缓存的 H.264 帧起一条临时解码管线，缩到 640×640 给 NPU，或存 JPEG 给网页看</td>
+</tr>
+<tr>
+<td><code>upgrade.hpp</code></td>
+<td>182</td>
+<td>数据库版本化升级。按版本号顺序执行 <code>sql/upgrade/V0xx.sql</code>，改表结构只写新脚本不改老代码</td>
+</tr>
+<tr>
+<td><code>algorithm_routes.hpp</code></td>
+<td>145</td>
+<td>模型上传（POST 二进制存 <code>tsl/models/</code>）、流程手动运行、算法产品模板初始化</td>
+</tr>
+<tr>
+<td><code>algorithm_seed.hpp</code></td>
+<td>170</td>
+<td>算法产品模板种子（幂等 INSERT OR IGNORE），一键写入闯入&#x2F;区域检测等 5 类产品</td>
+</tr>
+<tr>
+<td><code>seed.hpp</code></td>
+<td>146</td>
+<td>首次启动的示例数据。结构变更不走代码，只走 upgrade.sql</td>
+</tr>
+<tr>
+<td><code>context.hpp</code></td>
+<td>38</td>
+<td>运行时上下文（依赖注入容器）。替代全局变量，所有服务从它拿</td>
+</tr>
+<tr>
+<td><code>util.hpp</code></td>
+<td>94</td>
+<td>通用小工具：响应包装、时间、口令散列、token 鉴权、启动环境</td>
+</tr>
+<tr>
+<td><code>routes/base_routes.hpp</code></td>
+<td>54</td>
+<td>ping &#x2F; 登录 &#x2F; 当前用户 &#x2F; 异步任务查询</td>
+</tr>
+<tr>
+<td><code>routes/crud.hpp</code></td>
+<td>67</td>
+<td>泛型 CRUD 路由。零数据依赖，只做取参、调 hook、回包</td>
+</tr>
+<tr>
+<td><code>routes/control_routes.hpp</code></td>
+<td>75</td>
+<td><code>POST /api/deviceControl</code> —— 全平台唯一的设备控制端点</td>
+</tr>
+<tr>
+<td><code>routes/device_routes.hpp</code></td>
+<td>48</td>
+<td>设备查询 &#x2F; 属性读写的 HTTP 入口</td>
+</tr>
+<tr>
+<td><code>routes/product_routes.hpp</code></td>
+<td>31</td>
+<td>产品物模型视图 &#x2F; 媒体设置整包</td>
+</tr>
+<tr>
+<td><code>routes/stream_routes.hpp</code></td>
+<td>197</td>
+<td>网页实时视频入口。WebSocket 升级 + 取通道&#x2F;码流配置拼 StreamSpec（见附录 B）</td>
+</tr>
+</tbody></table>
+<h3 id="core-——-门面与基础设施（17-个文件）"><a href="#core-——-门面与基础设施（17-个文件）" class="headerlink" title="core&#x2F; —— 门面与基础设施（17 个文件）"></a>core&#x2F; —— 门面与基础设施（17 个文件）</h3><table>
+<thead>
+<tr>
+<th>文件</th>
+<th>行数</th>
+<th>干什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>stream_hub.hpp</code></td>
+<td>856</td>
+<td>★ 媒体唯一入口。GStreamer 管线管理 + 多观众共享分发 + 空闲回收。全项目最难的一个文件</td>
+</tr>
+<tr>
+<td><code>models.hpp</code></td>
+<td>801</td>
+<td>14 张表的 C++ 结构体 + CREATE TABLE 基线 DDL</td>
+</tr>
+<tr>
+<td><code>osd_service.hpp</code></td>
+<td>600</td>
+<td>OSD 文字叠加。FreeType 光栅化 → RGBA → 每帧 blend 进 NV12</td>
+</tr>
+<tr>
+<td><code>device_manager.hpp</code></td>
+<td>536</td>
+<td>★ 配置缓存单例。启动时把产品&#x2F;设备&#x2F;通道全读进内存，运行期读操作零 SQL，控制调用分派给 WorkerManager</td>
+</tr>
+<tr>
+<td><code>minihttp.hpp</code></td>
+<td>396</td>
+<td>极简 HTTP 服务器，零第三方依赖。自己解析请求行&#x2F;头&#x2F;体，支持 WebSocket 101 升级</td>
+</tr>
+<tr>
+<td><code>db_manager.hpp</code></td>
+<td>310</td>
+<td>★ 唯一数据访问层。全项目所有 SQL 只许出现在这里；读&#x2F;写双线程队列</td>
+</tr>
+<tr>
+<td><code>db.hpp</code></td>
+<td>275</td>
+<td>SQLite RAII 封装（被 DbManager 使用）。读写各一条线程，生产者-消费者</td>
+</tr>
+<tr>
+<td><code>ws.hpp</code></td>
+<td>281</td>
+<td>极简 WebSocket 服务端（RFC6455）。只实现推流需要的那部分；每连接一条独立发送线程 + 4MB 有界队列</td>
+</tr>
+<tr>
+<td><code>worker_manager.hpp</code></td>
+<td>215</td>
+<td>★ 实现类注册表 + 懒加载。按 <code>impl_class</code> 字符串找到对应 worker</td>
+</tr>
+<tr>
+<td><code>device_ctx.hpp</code></td>
+<td>91</td>
+<td>设备上下文。控制调用前统一装配好（设备行+属性快照），实现类只消费</td>
+</tr>
+<tr>
+<td><code>dma_frame.hpp</code></td>
+<td>103</td>
+<td>dma-buf 帧池。DRM dumb buffer + PRIME 导出，跨进程传帧的关键</td>
+</tr>
+<tr>
+<td><code>infer_client.hpp</code></td>
+<td>79</td>
+<td>unix socket 客户端。控制面 4B 长度+JSON，数据面 SCM_RIGHTS 传 dma-buf fd</td>
+</tr>
+<tr>
+<td><code>aiq_client.hpp</code></td>
+<td>156</td>
+<td>把网页调的图像参数（曝光&#x2F;增益&#x2F;锐度&#x2F;白平衡）转发给 aiq_paramd 守护进程</td>
+</tr>
+<tr>
+<td><code>taskmgr.hpp</code></td>
+<td>130</td>
+<td>异步任务管理器。耗时操作（PTZ 转动等）立即返回 task_id，前端轮询结果</td>
+</tr>
+<tr>
+<td><code>threadpool.hpp</code></td>
+<td>89</td>
+<td>公用线程池（固定 worker + 有界队列，满则拒绝）</td>
+</tr>
+<tr>
+<td><code>sthreads.hpp</code></td>
+<td>63</td>
+<td>线程设施兼容层。只在 MinGW 编译测试时用到，板上没用</td>
+</tr>
+<tr>
+<td><code>entity.hpp</code></td>
+<td>148</td>
+<td>实体注册表：把「实体名 → 5 个 CRUD 操作」做成类型擦除表，路由层才能零数据依赖</td>
+</tr>
+<tr>
+<td><code>hook.hpp</code></td>
+<td>118</td>
+<td>IHook 接口定义。Web 层 ↔ 数据&#x2F;设备层的唯一接口</td>
+</tr>
+<tr>
+<td><code>repo.hpp</code></td>
+<td>91</td>
+<td>字段表驱动的泛型 CRUD（一个 Repo 绑一张表+一份字段表）</td>
+</tr>
+<tr>
+<td><code>tables.hpp</code></td>
+<td>49</td>
+<td>模型 ↔ 表名&#x2F;字段表的唯一映射。改表名只改这里</td>
+</tr>
+<tr>
+<td><code>reflect.hpp</code></td>
+<td>117</td>
+<td>C++ 版”反射”：成员指针注册表，struct ↔ JSON&#x2F;SQL 互转</td>
+</tr>
+<tr>
+<td><code>services.hpp</code></td>
+<td>67</td>
+<td>平台标准服务的协议常量（webPlay 等服务名&#x2F;参数名）</td>
+</tr>
+</tbody></table>
+<h3 id="workers-——-实现类（4-类，按-impl-class-字符串对应）"><a href="#workers-——-实现类（4-类，按-impl-class-字符串对应）" class="headerlink" title="workers&#x2F; —— 实现类（4 类，按 impl_class 字符串对应）"></a>workers&#x2F; —— 实现类（4 类，按 impl_class 字符串对应）</h3><table>
+<thead>
+<tr>
+<th>文件</th>
+<th>行数</th>
+<th>干什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>onvif/onvif_client.hpp</code></td>
+<td>712</td>
+<td>ONVIF SOAP 客户端。GetCapabilities→GetProfiles→GetStreamUri→PTZ&#x2F;图像参数，零依赖自己拼 XML</td>
+</tr>
+<tr>
+<td><code>onvif/onvif_proxy.hpp</code></td>
+<td>704</td>
+<td>ONVIF 实现类。网页控制统一走 deviceControl 进来，本类 invoke() 分发 20+ 个操作</td>
+</tr>
+<tr>
+<td><code>onvif/onvif_product.hpp</code></td>
+<td>206</td>
+<td>ONVIF 产品物模型种子（产品编码 onvif-video-device）</td>
+</tr>
+<tr>
+<td><code>onvif/onvif_crypto.hpp</code></td>
+<td>213</td>
+<td>HTTP Digest 鉴权要的 md5&#x2F;sha1&#x2F;base64，自己写（板上没 openssl）</td>
+</tr>
+<tr>
+<td><code>onvif/onvif_models.hpp</code></td>
+<td>50</td>
+<td>ONVIF 数据结构（设备信息&#x2F;Profile&#x2F;通道&#x2F;预置位）</td>
+</tr>
+<tr>
+<td><code>yolo_region/yolo_region_worker.hpp</code></td>
+<td>354</td>
+<td>★ YOLO+区域检测。四步判定：标签过滤→得分过滤→区域重叠→排除区</td>
+</tr>
+<tr>
+<td><code>mipi/mipi_worker.hpp</code></td>
+<td>285</td>
+<td>MIPI 摄像头实现类。V4L2 协议逻辑（设备号&#x2F;码流参数&#x2F;通道管理）</td>
+</tr>
+<tr>
+<td><code>algorithm/algorithm_worker.hpp</code></td>
+<td>210</td>
+<td>通用算法产品实现类。读属性快照+上一步 params，产出推理结果供流程串联</td>
+</tr>
+<tr>
+<td><code>gpio/gpio_worker.hpp</code></td>
+<td>259</td>
+<td>GPIO 报警设备。<code>gpio_num</code> 属性 + 点灯 1 秒脉冲（259 行，最短的实现类，新手先读它）</td>
+</tr>
+</tbody></table>
+<h3 id="根目录其他东西（不参与编译，别慌）"><a href="#根目录其他东西（不参与编译，别慌）" class="headerlink" title="根目录其他东西（不参与编译，别慌）"></a>根目录其他东西（不参与编译，别慌）</h3><p><code>device_platform.db*</code> &#x2F; <code>hooktest*.db</code> 是 Windows 本地调试留下的测试库；<code>build.bat</code> &#x2F; <code>start.bat</code> &#x2F; <code>toolchain-ok1126b.cmake</code> 只在 Windows 跑单测用，板上编译走 VM 的 CMake + 交叉工具链；<code>sql/</code> 放基线 DDL 和 V0xx 升级脚本；<code>snapshots/</code> 是运行时抓图落盘目录。</p>
+<h3 id="前端-vue3-src（18-个文件，约-4400-行）"><a href="#前端-vue3-src（18-个文件，约-4400-行）" class="headerlink" title="前端 vue3&#x2F;src（18 个文件，约 4400 行）"></a>前端 vue3&#x2F;src（18 个文件，约 4400 行）</h3><table>
+<thead>
+<tr>
+<th>文件</th>
+<th>行数</th>
+<th>干什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>components/H264Player.vue</code></td>
+<td>549</td>
+<td>★ WebSocket 收流 → jmuxer 封 fMP4 → MSE 播放。协议见附录 B</td>
+</tr>
+<tr>
+<td><code>views/Products.vue</code></td>
+<td>531</td>
+<td>产品管理。<code>IMPL_OPTIONS</code> 必须含实现类名，否则编辑会覆盖</td>
+</tr>
+<tr>
+<td><code>views/FlowManage.vue</code></td>
+<td>502</td>
+<td>流程编排 + 运行日志（含抓图缩略图列）</td>
+</tr>
+<tr>
+<td><code>views/ChannelDetail.vue</code></td>
+<td>463</td>
+<td>通道详情页（实时预览、参数、OSD 都在这）</td>
+</tr>
+<tr>
+<td><code>views/AlgorithmConfig.vue</code></td>
+<td>333</td>
+<td>算法配置。<code>scalarTpls</code> 自动渲染 <code>access=rw</code> 属性，前端零特殊处理</td>
+</tr>
+<tr>
+<td><code>views/Devices.vue</code></td>
+<td>335</td>
+<td>设备列表</td>
+</tr>
+<tr>
+<td><code>components/RegionDrawer.vue</code></td>
+<td>257</td>
+<td>检测区域画框（归一化 0~1 坐标）</td>
+</tr>
+<tr>
+<td><code>components/OsdEditor.vue</code></td>
+<td>256</td>
+<td>OSD 字幕编辑</td>
+</tr>
+<tr>
+<td><code>views/Camera.vue</code></td>
+<td>219</td>
+<td>摄像头接入（ONVIF 自动发现）</td>
+</tr>
+<tr>
+<td><code>views/Channel.vue</code></td>
+<td>209</td>
+<td>通道管理</td>
+</tr>
+<tr>
+<td><code>views/AiModels.vue</code></td>
+<td>164</td>
+<td>模型上传管理</td>
+</tr>
+<tr>
+<td><code>views/Login.vue</code> &#x2F; <code>OsdManage.vue</code></td>
+<td>81</td>
+<td>登录 &#x2F; OSD 列表</td>
+</tr>
+<tr>
+<td><code>api.js</code> &#x2F; <code>router.js</code> &#x2F; <code>Layout.vue</code> &#x2F; <code>App.vue</code> &#x2F; <code>main.js</code></td>
+<td>141</td>
+<td>axios 封装 &#x2F; 路由 &#x2F; 外壳</td>
+</tr>
+</tbody></table>
+<h2 id="附录-B：完整推流流程，每一环涉及哪个文件"><a href="#附录-B：完整推流流程，每一环涉及哪个文件" class="headerlink" title="附录 B：完整推流流程，每一环涉及哪个文件"></a>附录 B：完整推流流程，每一环涉及哪个文件</h2><p>从 MIPI 摄像头的光子到浏览器里的像素，一共 9 环。<strong>整个数据面只涉及 6 个后端文件</strong>，其余都是配置来源（查一下就退场）。</p>
+<figure class="highlight dns"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br></pre></td><td class="code"><pre><span class="line">摄像头/ISP<span class="punctuation">(</span>驱动+paramd，不在本仓库<span class="punctuation">)</span></span><br><span class="line">   │  V4L2 节点 /dev/video23（mainpath 主码流）</span><br><span class="line">   ▼</span><br><span class="line">① stream_routes.hpp<span class="number">::</span>resolve_spec     查配置拼 StreamSpec（kind=<span class="number">1</span> MIPI / kind=<span class="number">0</span> RTSP）</span><br><span class="line">   ▼</span><br><span class="line">② stream_hub.hpp<span class="number">::</span>pipeline_desc<span class="punctuation">(</span><span class="punctuation">)</span>     拼 GStreamer 管线描述字符串</span><br><span class="line">   ▼</span><br><span class="line">③ stream_hub.hpp<span class="number">::</span>Stream<span class="number">::</span>start<span class="punctuation">(</span><span class="punctuation">)</span>     gst_parse_launch 建管线，osdenc sink 挂 OSD probe</span><br><span class="line">   ▼</span><br><span class="line">④ osd_service.hpp<span class="number">::</span>osd_probe<span class="punctuation">(</span><span class="punctuation">)</span>        每帧 blend 文字图层（时间戳/自定义字幕）</span><br><span class="line">   ▼</span><br><span class="line">⑤ stream_hub.hpp<span class="number">::</span>Stream<span class="number">::</span>loop<span class="punctuation">(</span><span class="punctuation">)</span>      appsink 拉 H.<span class="number">264</span> AU → 打包 [flag][pts][NALU]</span><br><span class="line">   ▼</span><br><span class="line">⑥ ws.hpp<span class="number">::C</span>onn<span class="number">::e</span>nqueue<span class="punctuation">(</span><span class="punctuation">)</span>             每观众一条发送线程 + <span class="number">4M</span>B 有界队列，逐个发出去</span><br><span class="line">   ▼</span><br><span class="line">浏览器 H264Player.vue                 jmuxer 封 fMP4 → MSE → &lt;video&gt; 播放</span><br></pre></td></tr></table></figure>
+
+<p>每一环的细节：</p>
+<table>
+<thead>
+<tr>
+<th>环</th>
+<th>文件（行号）</th>
+<th>发生什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>入口</td>
+<td><code>app/routes/stream_routes.hpp</code>（51 resolve_spec &#x2F; 162 路由体）</td>
+<td>浏览器 <code>GET /api/stream/:session?device_id=...&amp;channel=1&amp;stream=main</code>。查 DB 里的通道&#x2F;码流属性，决定 kind：ONVIF&#x3D;0（rtsp url）&#x2F; MIPI&#x3D;1（&#x2F;dev&#x2F;video 设备）。然后 <code>ws::accept</code> 完成 101 升级、<code>Hub::acquire</code> 拿共享 Stream</td>
+</tr>
+<tr>
+<td>拼管线</td>
+<td><code>core/stream_hub.hpp</code>（68 <code>pipeline_desc()</code>）</td>
+<td>MIPI：<code>v4l2src ! ... ! mpph264enc name=osdenc ! appsink max-buffers=5 drop=true</code>（硬编码，零 CPU）；ONVIF：<code>rtspsrc location=... protocols=tcp latency=200 ! 解码 ! 缩放 ! mpph264enc ! appsink</code>（因为网页不能播相机的原始 H.264 参数集，要转编一次）</td>
+</tr>
+<tr>
+<td>起管线</td>
+<td><code>core/stream_hub.hpp</code>（220 附近 <code>start()</code> &#x2F; 244 挂 probe）</td>
+<td><code>gst_parse_launch</code> → 找到 <code>appsink name=vsink</code> → 在 <code>osdenc</code> 的 sink pad 挂 <code>osd_probe</code> → 起独立线程跑 <code>loop()</code></td>
+</tr>
+<tr>
+<td>OSD 叠加</td>
+<td><code>core/osd_service.hpp</code>（146 <code>osd_probe</code> 在 stream_hub 里，blend 在 osd_service）</td>
+<td>每一帧编码前，把 FreeType 光栅化的文字（时间戳&#x2F;标题）SRC_OVER 进 NV12 帧的 Y&#x2F;UV 平面。probe 首帧记录分辨率并注册通道</td>
+</tr>
+<tr>
+<td>拉帧分发</td>
+<td><code>core/stream_hub.hpp</code>（521 <code>loop()</code> &#x2F; 467 <code>nal_type</code> &#x2F; 490 找 SPS 拼 codec 串）</td>
+<td><code>app_sink_pull_sample</code> 拿到 Annex B 数据。观众初次接入时先发一帧文本 init（<code>&#123;&quot;type&quot;:&quot;init&quot;,&quot;codec&quot;:&quot;avc1.xxxxxx&quot;,...&#125;</code>），再发二进制 <code>[1B flag][8B pts][NALU]</code>；只把 SPS&#x2F;PPS&#x2F;IDR 之前的部分原样转发，不做转码</td>
+</tr>
+<tr>
+<td>发送</td>
+<td><code>core/ws.hpp</code>（173 <code>enqueue</code> &#x2F; 232 <code>sender_loop</code> &#x2F; 214~216）</td>
+<td><strong>推流线程只入队，绝不 send</strong>。每连接一条 sender 线程从 4MB 有界队列取数据发送；队列超限判定该连接假死，只踢它一个，不影响别人</td>
+</tr>
+<tr>
+<td>HTTP 底座</td>
+<td><code>core/minihttp.hpp</code></td>
+<td>TCP 监听 + HTTP 解析 + WebSocket 101 升级握手（SHA1+base64），升级后的 fd 移交给 ws::Conn</td>
+</tr>
+<tr>
+<td>播放</td>
+<td><code>vue3/src/components/H264Player.vue</code>（138 <code>feedMse</code>）</td>
+<td>收 init 文本帧解析 codec → jmuxer 把 Annex B 封 fMP4 → MSE 喂 <code>&lt;video&gt;</code>。HUD 里有延迟显示（<code>buffered.end - currentTime</code>），卡顿时看它就知道是缓冲在涨</td>
+</tr>
+</tbody></table>
+<p><strong>配置从哪来（只查库不参与数据面）</strong>：<code>resolve_spec</code> 读的通道&#x2F;码流属性由 <code>core/device_manager.hpp</code> 缓存提供；ONVIF 相机的 rtsp 地址是当初 <code>workers/onvif/onvif_proxy.hpp::invoke</code> 调 GetStreamUri 存进库的；MIPI 的 <code>/dev/video23</code> 设备号是 <code>workers/mipi/mipi_worker.hpp</code> 写的通道属性。<strong>改推流行为只动 stream_hub &#x2F; ws &#x2F; stream_routes 三个文件</strong>，其他都是旁路。</p>
+<p>两个容易踩的坑也在这里标出来：</p>
+<ol>
+<li><strong><code>appsink max-buffers=5 drop=true</code></strong>——缓冲池故意开得很小，推流线程一卡就丢新帧保旧帧。这个设计配合”每连接独立发送线程”才成立：发送线程卡死不再影响推流线程。如果你要在 loop() 里加耗时逻辑，必须想清楚它会让所有观众一起丢帧。</li>
+<li><strong>抓图（snapshot_service）不碰主管线</strong>——它用 <code>loop()</code> 缓存的最近一个 H.264 AU 另起一条临时解码管线（<code>stream_hub.hpp</code> 350~380 行），编码主链路上一根手指都不碰。这也是”网页推流”和”算法截图”互不干扰的原因。</li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://cuishili-git.github.io/2026/11/17/2026-11-17-%E7%BA%BF%E8%B7%AF%E7%9B%91%E6%B5%8B%E5%B9%B3%E5%8F%B0%E6%BA%90%E7%A0%81%E5%9C%B0%E5%9B%BE%E4%B8%8E%E5%88%86%E5%B1%82%E8%AE%BE%E8%AE%A1/" data-id="cuidCIl9iVzpvdRBjHs60YaGc" data-title="线路在线监测平台源码地图：1.4 万行代码怎么分层，新手从哪读起" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/C/" rel="tag">C++</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E5%88%86%E5%B1%82%E8%AE%BE%E8%AE%A1/" rel="tag">分层设计</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E5%90%8E%E7%AB%AF%E6%9E%B6%E6%9E%84/" rel="tag">后端架构</a></li></ul>
+
+    </footer>
+  </div>
+  
+</article>
+
+
+
+  
     <article id="post-2026-11-17-交叉编译打包部署全流程" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
   <div class="article-meta">
     <a href="/2026/11/17/2026-11-17-%E4%BA%A4%E5%8F%89%E7%BC%96%E8%AF%91%E6%89%93%E5%8C%85%E9%83%A8%E7%BD%B2%E5%85%A8%E6%B5%81%E7%A8%8B/" class="article-date">
@@ -343,7 +896,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/17/2026-11-17-%E4%BA%A4%E5%8F%89%E7%BC%96%E8%AF%91%E6%89%93%E5%8C%85%E9%83%A8%E7%BD%B2%E5%85%A8%E6%B5%81%E7%A8%8B/" data-id="cuidKEhxEsoBHKNrxe3U4Ikv6" data-title="从改一行代码到板上生效：交叉编译、打包、部署、回滚全流程" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/17/2026-11-17-%E4%BA%A4%E5%8F%89%E7%BC%96%E8%AF%91%E6%89%93%E5%8C%85%E9%83%A8%E7%BD%B2%E5%85%A8%E6%B5%81%E7%A8%8B/" data-id="cuidCfriAemalDvzPyr9od1p3" data-title="从改一行代码到板上生效：交叉编译、打包、部署、回滚全流程" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -526,158 +1079,11 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/17/2026-11-17-%E5%90%8E%E7%AB%AF%E5%85%B3%E9%94%AE%E4%BB%A3%E7%A0%81%E5%AF%BC%E8%AF%BB-%E4%B8%83%E4%B8%AA%E5%87%BD%E6%95%B0/" data-id="cuidy3xFWNVfrTtpgX5OSLHpx" data-title="读懂这 7 个函数，就摸清了 1.4 万行后端代码" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/17/2026-11-17-%E5%90%8E%E7%AB%AF%E5%85%B3%E9%94%AE%E4%BB%A3%E7%A0%81%E5%AF%BC%E8%AF%BB-%E4%B8%83%E4%B8%AA%E5%87%BD%E6%95%B0/" data-id="cuidrqlB7bTWP8dMCKexTKqbj" data-title="读懂这 7 个函数，就摸清了 1.4 万行后端代码" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
   <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/C/" rel="tag">C++</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/YOLO/" rel="tag">YOLO</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/rv1126b/" rel="tag">rv1126b</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E4%BB%A3%E7%A0%81%E5%AF%BC%E8%AF%BB/" rel="tag">代码导读</a></li></ul>
-
-    </footer>
-  </div>
-  
-</article>
-
-
-
-  
-    <article id="post-2026-11-17-线路监测平台源码地图与分层设计" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
-  <div class="article-meta">
-    <a href="/2026/11/17/2026-11-17-%E7%BA%BF%E8%B7%AF%E7%9B%91%E6%B5%8B%E5%B9%B3%E5%8F%B0%E6%BA%90%E7%A0%81%E5%9C%B0%E5%9B%BE%E4%B8%8E%E5%88%86%E5%B1%82%E8%AE%BE%E8%AE%A1/" class="article-date">
-  <time class="dt-published" datetime="2026-11-17T05:41:07.000Z" itemprop="datePublished">2026-11-17</time>
-</a>
-    
-  <div class="article-category">
-    <a class="article-category-link" href="/categories/%E5%AE%9E%E6%88%98%E9%A1%B9%E7%9B%AE/">实战项目</a>
-  </div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-      <header class="article-header">
-        
-  
-    <h1 itemprop="name">
-      <a class="p-name article-title" href="/2026/11/17/2026-11-17-%E7%BA%BF%E8%B7%AF%E7%9B%91%E6%B5%8B%E5%B9%B3%E5%8F%B0%E6%BA%90%E7%A0%81%E5%9C%B0%E5%9B%BE%E4%B8%8E%E5%88%86%E5%B1%82%E8%AE%BE%E8%AE%A1/">线路在线监测平台源码地图：1.4 万行代码怎么分层，新手从哪读起</a>
-    </h1>
-  
-
-      </header>
-    
-    <div class="e-content article-entry" itemprop="articleBody">
-      
-        <p>这个项目最终跑在一台飞凌 OK1126B-S 开发板（RV1126B，aarch64）上，做的事很具体：接一路 MIPI 摄像头，把画面推到网页上实时看，同时每隔一段时间用 NPU 跑一次 YOLO 检测，命中目标就点亮一个 GPIO 报警。</p>
-<p>代码量不大，但第一次打开目录很容易迷路——46 个头文件、5 个独立进程、4 个数据库表族、1 个 Vue3 前端。这篇先把地图画清楚：谁是入口、谁只能单向依赖谁、一次点击从浏览器走到硬件要经过哪几层。</p>
-<h2 id="一、先记住三台机器"><a href="#一、先记住三台机器" class="headerlink" title="一、先记住三台机器"></a>一、先记住三台机器</h2><table>
-<thead>
-<tr>
-<th>角色</th>
-<th>位置</th>
-<th>装什么</th>
-<th>你在这上面干什么</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>开发机</td>
-<td>Windows</td>
-<td>前端源码 <code>vue3/</code>、后端源码副本</td>
-<td>改代码、看报错、写页面</td>
-</tr>
-<tr>
-<td>编译机</td>
-<td>Ubuntu VM（<code>~/forlinx/my</code>）</td>
-<td>交叉工具链 + 全部后端源码 + 飞凌 SDK</td>
-<td>编译出 aarch64 二进制</td>
-</tr>
-<tr>
-<td>板子</td>
-<td>192.168.1.232</td>
-<td>只有二进制、前端 dist、数据库、日志</td>
-<td>跑、验收、看日志</td>
-</tr>
-</tbody></table>
-<p><strong>没有在板子上编译这回事</strong>。板子上的 8G eMMC 只有 3 个 G 可用，编译一次 GStreamer 相关代码要 20 分钟以上，所以一切二进制都在 VM 上交叉编译好，scp 推过去。这条规矩定死了，后面所有流程都围绕它。</p>
-<h2 id="二、板上实际跑着-5-个进程"><a href="#二、板上实际跑着-5-个进程" class="headerlink" title="二、板上实际跑着 5 个进程"></a>二、板上实际跑着 5 个进程</h2><figure class="highlight mathematica"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="operator">/</span><span class="variable">etc</span><span class="operator">/</span><span class="variable">init</span><span class="operator">.</span><span class="variable">d</span><span class="operator">/</span><span class="variable">S46watchdogd</span>   ← 开机唯一入口，拉起下面 <span class="number">4</span> 个 <span class="operator">+</span> 自己</span><br><span class="line">   ├─ <span class="type">aiq_paramd</span>      <span class="variable">ISP</span><span class="operator">/</span><span class="number">3</span><span class="variable">A</span> 参数守护（<span class="built_in">C</span>，<span class="number">850</span> 行）   负责曝光<span class="operator">/</span>增益<span class="operator">/</span>白平衡<span class="operator">/</span>镜像</span><br><span class="line">   ├─ <span class="type">device_platform</span> 主平台（<span class="built_in">C</span><span class="operator">++</span>，<span class="number">11000</span> 行）        <span class="variable">HTTP</span> <span class="operator">+</span> 推流 <span class="operator">+</span> 流程引擎 <span class="operator">+</span> 抓图</span><br><span class="line">   ├─ <span class="type">rknn_inferd</span>     <span class="variable">NPU</span> 推理进程（<span class="built_in">C</span><span class="operator">++</span>，<span class="number">732</span> 行）    独立进程，只认 <span class="variable">unix</span> <span class="variable">socket</span></span><br><span class="line">   └─ <span class="variable">recordd</span>         录像进程（<span class="built_in">C</span>，<span class="number">199</span> 行）          数据面独立，不挂主推流</span><br></pre></td></tr></table></figure>
-
-<p>为什么把推理拆成独立进程？因为 RKNN 的 NPU 上下文一旦崩了会把整个进程带走。2026-11 之前推理还在主平台里，模型一异常整个网页就 502。拆出去之后 <code>rknn_inferd</code> 挂了只是算法报警失效，看视频不受影响，watchdog 会单独把它拉回来。</p>
-<p>为什么 3A 是独立守护？<code>rkaiq</code> 的 API 不是线程安全的，而且它的初始化要等 ISP 媒体图建好。混在业务进程里，一重启业务进程就得重走一遍 ISP 初始化，中间黑屏 10 秒。分开之后参数调整是”发命令”，不碰业务。</p>
-<h2 id="三、主平台的分层：三层单向依赖"><a href="#三、主平台的分层：三层单向依赖" class="headerlink" title="三、主平台的分层：三层单向依赖"></a>三、主平台的分层：三层单向依赖</h2><p>这是整套代码最重要的设计，理解了它就不会写错代码：</p>
-<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">① 接入层   app/routes/*.hpp        ── 只认识 HTTP：取参、鉴权、序列化</span><br><span class="line">② 门面层   core/hook.hpp (IHook)   ── 平台唯一接口：list/get/create/update/remove/call</span><br><span class="line">③ 实现层   app/hook_impl.hpp       ── 唯一实现，知道数据库长什么样</span><br><span class="line">              ├─→ core/device_manager.hpp   设备管理唯一入口（配置缓存 + 属性 + 控制分派）</span><br><span class="line">              │       └─→ core/worker_manager.hpp  按 impl_class 懒加载实现类</span><br><span class="line">              │               └─→ workers/xxx/*_worker.hpp  纯协议/业务实现</span><br><span class="line">              └─→ core/db_manager.hpp       唯一数据访问层（全部 SQL 在这里）</span><br></pre></td></tr></table></figure>
-
-<p>三条铁律，违反了代码就会被 review 打回：</p>
-<ol>
-<li><strong>路由文件里不许出现 SQL、表名、模型</strong>。只能 <code>hook().call(&quot;device.control&quot;, args)</code>。</li>
-<li><strong>worker 实现类里不许出现 <code>DbManager</code></strong>。要读配置就用 <code>dc.attr(&quot;ip&quot;)</code>，要写状态就用 <code>dc.set_attr()</code>。</li>
-<li><strong><code>DbManager</code> 只被 <code>DeviceManager</code> 和 <code>hook_impl</code> 使用</strong>。</li>
-</ol>
-<p>好处是具体的：换数据源只改一个文件；单元测试装个假 hook 就能跑路由；新人改业务只碰 <code>hook_impl.hpp</code>，不会误伤 HTTP 层。</p>
-<h2 id="四、目录速查（按你真正会改的频率排序）"><a href="#四、目录速查（按你真正会改的频率排序）" class="headerlink" title="四、目录速查（按你真正会改的频率排序）"></a>四、目录速查（按你真正会改的频率排序）</h2><figure class="highlight stylus"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br></pre></td><td class="code"><pre><span class="line">backend/<span class="attribute">src</span>/</span><br><span class="line">├── <span class="selector-tag">main</span><span class="selector-class">.cpp</span>                      <span class="number">287</span> 行  ★ 程序入口，只做装配，不含业务</span><br><span class="line">├── app/</span><br><span class="line">│   ├── hook_impl<span class="selector-class">.hpp</span>             <span class="number">441</span> 行  ★ IHook 实现：实体注册 + <span class="number">7</span> 个业务动作</span><br><span class="line">│   ├── flow_engine<span class="selector-class">.hpp</span>           <span class="number">344</span> 行  ★ 流程引擎：模板渲染 + 定时调度 + 执行</span><br><span class="line">│   ├── snapshot_service<span class="selector-class">.hpp</span>      <span class="number">293</span> 行  ★ 抓图服务：H.<span class="number">264</span> → <span class="number">640</span>×<span class="number">640</span> RGB → dma-buf</span><br><span class="line">│   ├── algorithm_routes<span class="selector-class">.hpp</span>      <span class="number">145</span> 行    模型上传 / 流程手动触发</span><br><span class="line">│   ├── upgrade<span class="selector-class">.hpp</span>               <span class="number">182</span> 行    V*<span class="selector-class">.sql</span> 版本化升级</span><br><span class="line">│   └── routes/                            <span class="built_in">CRUD</span>(<span class="number">67</span>) <span class="built_in">control</span>(<span class="number">75</span>) <span class="built_in">device</span>(<span class="number">48</span>) <span class="built_in">stream</span>(<span class="number">197</span>) ...</span><br><span class="line">├── core/</span><br><span class="line">│   ├── stream_hub<span class="selector-class">.hpp</span>            <span class="number">856</span> 行  ★ 媒体唯一入口：GStreamer 管线 + 多观众分发</span><br><span class="line">│   ├── models<span class="selector-class">.hpp</span>                <span class="number">801</span> 行    <span class="number">14</span> 张表的 C++ 结构体 + CREATE TABLE</span><br><span class="line">│   ├── osd_service<span class="selector-class">.hpp</span>           <span class="number">600</span> 行    OSD 叠加（RGA 硬件 blend + FreeType）</span><br><span class="line">│   ├── device_manager<span class="selector-class">.hpp</span>        <span class="number">536</span> 行  ★ 配置缓存 + 属性读写 + 控制分派</span><br><span class="line">│   ├── minihttp<span class="selector-class">.hpp</span>              <span class="number">396</span> 行    极简 HTTP 服务器（零依赖，自己写）</span><br><span class="line">│   ├── db_manager<span class="selector-class">.hpp</span>            <span class="number">310</span> 行  ★ 唯一数据访问层</span><br><span class="line">│   ├── ws<span class="selector-class">.hpp</span>                    <span class="number">281</span> 行    WebSocket 服务端 + 每连接发送线程</span><br><span class="line">│   ├── worker_manager<span class="selector-class">.hpp</span>        <span class="number">215</span> 行  ★ 实现类注册表 + 懒加载</span><br><span class="line">│   ├── dma_frame<span class="selector-class">.hpp</span>             <span class="number">103</span> 行    dma-buf 帧池（跨进程传帧的关键）</span><br><span class="line">│   └── infer_client<span class="selector-class">.hpp</span>           <span class="number">79</span> 行    unix socket + SCM_RIGHTS 传 fd</span><br><span class="line">└── workers/</span><br><span class="line">    ├── onvif/                   <span class="number">1266</span> 行   ONVIF 摄像头（发现/RTSP 地址/PTZ）</span><br><span class="line">    ├── yolo_region/              <span class="number">354</span> 行  ★ YOLO + 区域判定算法产品</span><br><span class="line">    ├── mipi/                     <span class="number">285</span> 行   MIPI 直连摄像头</span><br><span class="line">    ├── algorithm/                <span class="number">210</span> 行   通用算法产品（调外部推理）</span><br><span class="line">    └── gpio/                     <span class="number">259</span> 行   GPIO 报警设备</span><br></pre></td></tr></table></figure>
-
-<p>前端 <code>vue3/src</code> 约 4400 行，10 个页面 + 3 个组件，最大的 <code>H264Player.vue</code> 549 行（WebSocket 收流 + MSE 解码）。</p>
-<h2 id="五、三张数据流，看懂就懂-80"><a href="#五、三张数据流，看懂就懂-80" class="headerlink" title="五、三张数据流，看懂就懂 80%"></a>五、三张数据流，看懂就懂 80%</h2><h3 id="流-1：网页改一个参数（配置类）"><a href="#流-1：网页改一个参数（配置类）" class="headerlink" title="流 1：网页改一个参数（配置类）"></a>流 1：网页改一个参数（配置类）</h3><figure class="highlight dns"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">浏览器 PUT /api/video-images/abc</span><br><span class="line">  → routes/crud.hpp           只做三件事：取 body、调 hook、回包</span><br><span class="line">  → hook<span class="punctuation">(</span><span class="punctuation">)</span>.update<span class="punctuation">(</span><span class="string">&quot;video_image&quot;</span>, <span class="string">&quot;abc&quot;</span>, body<span class="punctuation">)</span></span><br><span class="line">  → PlatformHook<span class="number">::</span>update<span class="punctuation">(</span><span class="punctuation">)</span>    实体名查注册表 → 拿到 EntityOps</span><br><span class="line">  → DbManager<span class="number">::</span>update&lt;VideoImage&gt;<span class="punctuation">(</span><span class="punctuation">)</span>  拼 UPDATE，写线程串行执行</span><br><span class="line">  → DeviceManager<span class="number">::</span>reload<span class="punctuation">(</span><span class="punctuation">)</span>   配置缓存整刷（下次读走内存，零 SQL）</span><br></pre></td></tr></table></figure>
-
-<p>配置类表（产品、设备、通道、码流）全部常住内存，<code>DeviceManager::load()</code> 在启动时一次性读进来。之后所有 list 接口都是内存过滤，不走数据库——这是网页秒开的原因。</p>
-<h3 id="流-2：网页看实时视频"><a href="#流-2：网页看实时视频" class="headerlink" title="流 2：网页看实时视频"></a>流 2：网页看实时视频</h3><figure class="highlight dns"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">浏览器 new WebSocket<span class="punctuation">(</span>&#x27;/api/stream/&lt;channel&gt;/&lt;stream&gt;&#x27;<span class="punctuation">)</span></span><br><span class="line">  → routes/stream_routes.hpp  握手，取通道/码流配置</span><br><span class="line">  → medi<span class="number">a::</span>Hu<span class="number">b::ac</span>quire<span class="punctuation">(</span>spec<span class="punctuation">)</span> 同 <span class="keyword">key</span> 复用，多人共享一条管线</span><br><span class="line">  → Stream<span class="number">::</span>loop<span class="punctuation">(</span><span class="punctuation">)</span>            独立线程拉 appsink</span><br><span class="line">       ├─ 文本帧 &#123;<span class="string">&quot;type&quot;</span>:<span class="string">&quot;init&quot;</span>,<span class="string">&quot;codec&quot;</span>:<span class="string">&quot;avc1.640028&quot;</span>,<span class="string">&quot;width&quot;</span>:<span class="number">2112</span>,...&#125;</span><br><span class="line">       └─ 二进制帧 [<span class="number">1</span>B flag][<span class="number">8</span>B pts][Annex B H.<span class="number">264</span>]</span><br><span class="line">  → ws<span class="number">::C</span>onn<span class="number">::e</span>nqueue<span class="punctuation">(</span><span class="punctuation">)</span>       每连接一个有界队列，推流线程只入队不发送</span><br><span class="line">  → 浏览器 jmuxer 转 fMP4 → MSE 播放</span><br></pre></td></tr></table></figure>
-
-<p>关键点：<strong>推流线程绝不直接 send</strong>。2026-11-10 排查了一整天的”看十几分钟就花屏”，根因就是早期版本在推流线程里对每个观众阻塞 send——任何一个观众卡顿（切标签页、WiFi 抖动），推流线程就停在 send 上，共享的 appsink 开始丢编码帧，丢掉的是别人的参考帧，于是所有观众一起花屏。现在每个连接一条发送线程 + 4MB 有界队列，超限只踢那一个连接。</p>
-<h3 id="流-3：定时跑一次算法（流程）"><a href="#流-3：定时跑一次算法（流程）" class="headerlink" title="流 3：定时跑一次算法（流程）"></a>流 3：定时跑一次算法（流程）</h3><figure class="highlight dns"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br></pre></td><td class="code"><pre><span class="line">FlowEngine 调度线程（每 <span class="number">1</span> 秒扫一遍 tki_flow）</span><br><span class="line">  → trigger_type=interval，到点 fire<span class="punctuation">(</span><span class="punctuation">)</span></span><br><span class="line">  → FlowEngin<span class="number">e::</span>run<span class="punctuation">(</span>flow_id<span class="punctuation">)</span>   按 sort_index 顺序执行节点</span><br><span class="line">  → 节点 <span class="number">1</span>：算法设备 yolo_region</span><br><span class="line">       ├─ params 里没有 detections、没有 dma_fd</span><br><span class="line">       ├─ 自己按 bind_device_id 调 hook<span class="punctuation">(</span><span class="punctuation">)</span>.call<span class="punctuation">(</span><span class="string">&quot;device.control&quot;</span>, &#123;cmd:<span class="string">&quot;snapshot&quot;</span>&#125;<span class="punctuation">)</span></span><br><span class="line">       ├─ snapshot_service：从 Stream 缓存的 H.<span class="number">264</span> AU 起临时解码管线</span><br><span class="line">       │    → videoscale add-borders=true → <span class="number">640</span>×<span class="number">640</span> RGB → memcpy 进 dma-buf</span><br><span class="line">       ├─ infer<span class="number">::ca</span>ll<span class="punctuation">(</span>req, dma_fd<span class="punctuation">)</span>   unix socket + SCM_RIGHTS 把 fd 传给 rknn_inferd</span><br><span class="line">       └─ 拿到框 → 按标签过滤 → 按得分过滤 → 区域重叠 → exclude → hit</span><br><span class="line">  → &#123;&#123;prev.count&#125;&#125; 之类模板变量把结果传给下一个节点</span><br><span class="line">  → 节点 <span class="number">2</span>：GPIO 报警设备，hit=true 就点灯 <span class="number">1</span> 秒</span><br><span class="line">  → 全过程写 tki_flow_run，网页「运行日志」能看到每步 JSON 和抓图缩略图</span><br></pre></td></tr></table></figure>
-
-<p>划重点：<strong>算法设备自己截图</strong>，不再需要在流程里拖一个”摄像头截图”节点。这是 2026-11-10 的简化，减少一次人工配置错误的机会。</p>
-<h2 id="六、四个”反直觉但必须这样”的设计"><a href="#六、四个”反直觉但必须这样”的设计" class="headerlink" title="六、四个”反直觉但必须这样”的设计"></a>六、四个”反直觉但必须这样”的设计</h2><table>
-<thead>
-<tr>
-<th>设计</th>
-<th>直觉做法</th>
-<th>实际做法</th>
-<th>为什么</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>传帧给推理进程</td>
-<td>传内存指针 &#x2F; 传整帧字节</td>
-<td>传 dma-buf fd（<code>SCM_RIGHTS</code>）</td>
-<td>指针跨进程无效；传 1.2MB 字节每帧多一次拷贝，NPU 还得再拷一次</td>
-</tr>
-<tr>
-<td>打开 MySQL 式的连接池</td>
-<td>每请求建连接</td>
-<td>单例 + 读线程&#x2F;写线程各一条队列</td>
-<td>SQLite WAL 下写必须串行，加连接只会撞 SQLITE_BUSY</td>
-</tr>
-<tr>
-<td>实时视频用 RTSP</td>
-<td>起 rtsp 服务端</td>
-<td>直接 WebSocket 发裸 H.264</td>
-<td>板子没装 mediamtx，浏览器也不认裸 RTP；WS 一条通道同时能发 JSON 控制消息</td>
-</tr>
-<tr>
-<td>结构变更</td>
-<td>改 <code>CREATE TABLE</code></td>
-<td>只改基线 DDL，增量放 <code>sql/upgrade/V0xx.sql</code></td>
-<td>现场板子的库里有数据，重建表就全丢了；版本表记账可以反复执行</td>
-</tr>
-</tbody></table>
-<h2 id="七、给你的阅读顺序"><a href="#七、给你的阅读顺序" class="headerlink" title="七、给你的阅读顺序"></a>七、给你的阅读顺序</h2><p>不要从头读。按这个顺序，每步都能跑起来验证：</p>
-<ol>
-<li><code>main.cpp</code> —— 只看 113~213 行，看清楚启动顺序：开库 → 建表 → 升级 → 装 hook → 注册路由 → 监听。</li>
-<li>打开网页点一次「设备列表」，对照 <code>routes/crud.hpp</code> → <code>hook_impl.hpp::list</code> → <code>device_manager.hpp::rows</code>，把这条链路走通。</li>
-<li>读 <code>core/entity.hpp</code> 和 <code>hook_impl.hpp::register_default_entities()</code>，理解”实体名 → 表”是怎么注册的。</li>
-<li>读 <code>workers/gpio/gpio_worker.hpp</code>（259 行，最短的实现类），理解 <code>invoke()</code> 这个唯一入口。</li>
-<li>读 <code>app/flow_engine.hpp::run()</code>，理解流程节点怎么变成 <code>hook().call(&quot;device.control&quot;)</code>。</li>
-<li>读 <code>workers/yolo_region/yolo_region_worker.hpp</code>，理解算法产品的四步判定。</li>
-<li>最后才碰 <code>core/stream_hub.hpp</code>（856 行，最难）和 <code>core/osd_service.hpp</code>（600 行，涉及 RGA 和 ISP）。</li>
-</ol>
-<p>前 6 步都是纯业务逻辑加 SQL，不需要懂 GStreamer、不需要懂 NPU、不需要懂 ISP。<strong>这是刻意的</strong>：这套代码的分层就是为了让 80% 的需求不需要碰那 20% 的硬骨头。</p>
-<p>下一篇会把上面第 1、4、5、6 步对应的函数逐个拆开讲，配上真实代码和踩坑理由。</p>
-
-      
-    </div>
-    <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/17/2026-11-17-%E7%BA%BF%E8%B7%AF%E7%9B%91%E6%B5%8B%E5%B9%B3%E5%8F%B0%E6%BA%90%E7%A0%81%E5%9C%B0%E5%9B%BE%E4%B8%8E%E5%88%86%E5%B1%82%E8%AE%BE%E8%AE%A1/" data-id="cuidgc8rsq1KGT9kmEMM0lmtH" data-title="线路在线监测平台源码地图：1.4 万行代码怎么分层，新手从哪读起" class="article-share-link"><span class="fa fa-share">分享</span></a>
-      
-      
-      
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/C/" rel="tag">C++</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E5%88%86%E5%B1%82%E8%AE%BE%E8%AE%A1/" rel="tag">分层设计</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E5%90%8E%E7%AB%AF%E6%9E%B6%E6%9E%84/" rel="tag">后端架构</a></li></ul>
 
     </footer>
   </div>
@@ -777,7 +1183,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/10/2026-11-10-RV1126B%E8%A7%86%E9%A2%91%E9%80%9A%E9%81%93%E5%AE%9E%E6%88%98-MIPI%E4%B8%8EONVIF-%E6%8A%93%E5%9B%BE%E9%AA%8C%E6%B4%BB%E4%B8%8E%E5%BD%95%E5%83%8F%E5%91%BD%E4%BB%A4/" data-id="cuidbVq4OFZThJ3hr7pCuzZYB" data-title="RV1126B 视频通道实战：v4l2 命令行抓图、录像与 MIPI/ONVIF 双路排查" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/10/2026-11-10-RV1126B%E8%A7%86%E9%A2%91%E9%80%9A%E9%81%93%E5%AE%9E%E6%88%98-MIPI%E4%B8%8EONVIF-%E6%8A%93%E5%9B%BE%E9%AA%8C%E6%B4%BB%E4%B8%8E%E5%BD%95%E5%83%8F%E5%91%BD%E4%BB%A4/" data-id="cuidoe4m5GEuLDJgXwssYXA1M" data-title="RV1126B 视频通道实战：v4l2 命令行抓图、录像与 MIPI/ONVIF 双路排查" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -982,7 +1388,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/10/2026-11-10-RV1126B%E5%BC%80%E5%8F%91%E6%9D%BFGPIO%E5%AE%9E%E6%88%98sysfs%E7%82%B9%E7%81%AF/" data-id="cuidakDrkuTwxZ_Z8jt-m5D_G" data-title="RV1126B 开发板 GPIO 实战：从原理图丝印到 sysfs 点灯（附三个排坑案例）" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/10/2026-11-10-RV1126B%E5%BC%80%E5%8F%91%E6%9D%BFGPIO%E5%AE%9E%E6%88%98sysfs%E7%82%B9%E7%81%AF/" data-id="cuidMh3-A8nXt4sG7vLsZ-HJL" data-title="RV1126B 开发板 GPIO 实战：从原理图丝印到 sysfs 点灯（附三个排坑案例）" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -1431,7 +1837,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-ISP%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0%E8%B0%83%E6%95%B4-%E4%BB%8Erkaiq%E6%8E%A5%E7%AE%A1%E5%88%B0%E5%89%8D%E7%AB%AF%E8%B0%83%E8%89%B2/" data-id="cuidmqifDHZ3Z8wrEw3pV72zR" data-title="ISP 图像参数调整：从 rkaiq 接管到前端调色" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-ISP%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0%E8%B0%83%E6%95%B4-%E4%BB%8Erkaiq%E6%8E%A5%E7%AE%A1%E5%88%B0%E5%89%8D%E7%AB%AF%E8%B0%83%E8%89%B2/" data-id="cuidPTMNd1kBIshnvw40q-4T6" data-title="ISP 图像参数调整：从 rkaiq 接管到前端调色" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -2109,7 +2515,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%B5%81%E5%AA%92%E4%BD%93%E5%9B%9B%E5%8F%82%E6%95%B0-%E5%88%86%E8%BE%A8%E7%8E%87%E5%B8%A7%E7%8E%87%E7%A0%81%E7%8E%87GOP%E8%AE%B2%E6%B8%85%E6%A5%9A/" data-id="cuid0YMaw1QYOCEu3uXk4XIrG" data-title="分辨率、帧率、码率、GOP：视频参数一次讲明白" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%B5%81%E5%AA%92%E4%BD%93%E5%9B%9B%E5%8F%82%E6%95%B0-%E5%88%86%E8%BE%A8%E7%8E%87%E5%B8%A7%E7%8E%87%E7%A0%81%E7%8E%87GOP%E8%AE%B2%E6%B8%85%E6%A5%9A/" data-id="cuidgG3bbzoO5Rz7-VF9Qxe0m" data-title="分辨率、帧率、码率、GOP：视频参数一次讲明白" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -2977,7 +3383,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/" data-id="cuid5keO3rTIMsdK9Yl82t-I4" data-title="从零搭一套 Hexo + GitHub Pages 博客，并做到一条命令发布" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-Hexo%E5%8A%A0GitHub-Pages%E5%8D%9A%E5%AE%A2-%E4%BB%8E%E5%BB%BA%E7%AB%99%E5%88%B0%E5%8F%91%E5%B8%83%E5%85%A8%E6%B5%81%E7%A8%8B/" data-id="cuid5u1C52ZmvizdKX7kXQb3e" data-title="从零搭一套 Hexo + GitHub Pages 博客，并做到一条命令发布" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -3531,7 +3937,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/" data-id="cuidZnfz0PDoD1OiAKQ5zKLzv" data-title="搞不清 V4L2、GStreamer、appsink？一篇讲透" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%90%9E%E4%B8%8D%E6%B8%85V4L2-GStreamer-appsink-%E4%B8%80%E7%AF%87%E8%AE%B2%E9%80%8F/" data-id="cuidgcDEeMlmUKkZvmAiYic36" data-title="搞不清 V4L2、GStreamer、appsink？一篇讲透" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -5067,7 +5473,7 @@
       
     </div>
     <footer class="article-footer">
-      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidYYzqn5CgBGqp64eEv3VCw" data-title="摄像头开发入门：从一台陌生设备，到浏览器里出画面" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      <a data-url="https://cuishili-git.github.io/2026/11/07/2026-11-07-%E6%91%84%E5%83%8F%E5%A4%B4%E5%BC%80%E5%8F%91%E5%85%A5%E9%97%A8-%E4%BB%8E%E8%AE%BE%E5%A4%87%E5%88%86%E6%9E%90%E5%88%B0%E7%BD%91%E9%A1%B5%E6%92%AD%E6%94%BE/" data-id="cuidStV13_I-dMTZg4fLVVs3G" data-title="摄像头开发入门：从一台陌生设备，到浏览器里出画面" class="article-share-link"><span class="fa fa-share">分享</span></a>
       
       
       
@@ -5138,15 +5544,15 @@
       <ul>
         
           <li>
+            <a href="/2026/11/17/2026-11-17-%E7%BA%BF%E8%B7%AF%E7%9B%91%E6%B5%8B%E5%B9%B3%E5%8F%B0%E6%BA%90%E7%A0%81%E5%9C%B0%E5%9B%BE%E4%B8%8E%E5%88%86%E5%B1%82%E8%AE%BE%E8%AE%A1/">线路在线监测平台源码地图：1.4 万行代码怎么分层，新手从哪读起</a>
+          </li>
+        
+          <li>
             <a href="/2026/11/17/2026-11-17-%E4%BA%A4%E5%8F%89%E7%BC%96%E8%AF%91%E6%89%93%E5%8C%85%E9%83%A8%E7%BD%B2%E5%85%A8%E6%B5%81%E7%A8%8B/">从改一行代码到板上生效：交叉编译、打包、部署、回滚全流程</a>
           </li>
         
           <li>
             <a href="/2026/11/17/2026-11-17-%E5%90%8E%E7%AB%AF%E5%85%B3%E9%94%AE%E4%BB%A3%E7%A0%81%E5%AF%BC%E8%AF%BB-%E4%B8%83%E4%B8%AA%E5%87%BD%E6%95%B0/">读懂这 7 个函数，就摸清了 1.4 万行后端代码</a>
-          </li>
-        
-          <li>
-            <a href="/2026/11/17/2026-11-17-%E7%BA%BF%E8%B7%AF%E7%9B%91%E6%B5%8B%E5%B9%B3%E5%8F%B0%E6%BA%90%E7%A0%81%E5%9C%B0%E5%9B%BE%E4%B8%8E%E5%88%86%E5%B1%82%E8%AE%BE%E8%AE%A1/">线路在线监测平台源码地图：1.4 万行代码怎么分层，新手从哪读起</a>
           </li>
         
           <li>
