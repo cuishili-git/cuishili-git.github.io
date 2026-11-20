@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  
+  <title>Win7 上跑通 ONNX 推理服务:从 Java 降级到 C++ 独立 exe 的全过程复盘(附 PE 导入表定位缺失 DLL) | 老崔的技术笔记</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+  <meta name="description" content="背景现场是一台 Win7 x64 机器,要跑一个 PRPD(局放)图像识别的 ONNX 推理服务。原项目是 JDK17 + Spring Boot 3.2.8 + onnxruntime Java,入口是 ReasonController#prpdRecognize,HTTP 端口 20011。在本机一切正常,到了 Win7 直接起不来。 需求很硬:Win7 上零安装运行、接口和端口不变、返回 J">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Win7 上跑通 ONNX 推理服务:从 Java 降级到 C++ 独立 exe 的全过程复盘(附 PE 导入表定位缺失 DLL)">
+<meta property="og:url" content="https://cuishili-git.github.io/2026/11/20/2026-11-20-Win7%E8%B7%91%E9%80%9AONNX%E6%8E%A8%E7%90%86%E6%9C%8D%E5%8A%A1%E5%85%A8%E5%A4%8D%E7%9B%98/index.html">
+<meta property="og:site_name" content="老崔的技术笔记">
+<meta property="og:description" content="背景现场是一台 Win7 x64 机器,要跑一个 PRPD(局放)图像识别的 ONNX 推理服务。原项目是 JDK17 + Spring Boot 3.2.8 + onnxruntime Java,入口是 ReasonController#prpdRecognize,HTTP 端口 20011。在本机一切正常,到了 Win7 直接起不来。 需求很硬:Win7 上零安装运行、接口和端口不变、返回 J">
+<meta property="og:locale" content="zh_CN">
+<meta property="article:published_time" content="2026-11-20T10:18:27.000Z">
+<meta property="article:modified_time" content="2026-11-20T10:18:27.413Z">
+<meta property="article:author" content="老崔">
+<meta property="article:tag" content="C++">
+<meta property="article:tag" content="ONNX Runtime">
+<meta property="article:tag" content="PE导入表">
+<meta property="article:tag" content="Win7">
+<meta property="article:tag" content="踩坑复盘">
+<meta name="twitter:card" content="summary">
+  
+    <link rel="alternate" href="/atom.xml" title="老崔的技术笔记" type="application/atom+xml">
+  
+  
+    <link rel="shortcut icon" href="/favicon.png">
+  
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  
+    
+<link rel="stylesheet" href="/fancybox/jquery.fancybox.min.css">
+
+  
+  
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fork-awesome@1.2.0/css/fork-awesome.min.css">
+
+<meta name="generator" content="Hexo 8.1.2"></head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">老崔的技术笔记</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap">
+          <a href="/" id="subtitle">实战项目 · 调试复盘</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"><span class="fa fa-bars"></span></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+        
+          <a class="nav-icon" href="/atom.xml" title="RSS 订阅"><span class="fa fa-rss"></span></a>
+        
+        <a class="nav-icon nav-search-btn" title="搜索"><span class="fa fa-search"></span></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="搜索"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="https://cuishili-git.github.io"></form>
+      </div>
+    </div>
+  </div>
+</header>
+
+      <div class="outer">
+        <section id="main"><article id="post-2026-11-20-Win7跑通ONNX推理服务全复盘" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2026/11/20/2026-11-20-Win7%E8%B7%91%E9%80%9AONNX%E6%8E%A8%E7%90%86%E6%9C%8D%E5%8A%A1%E5%85%A8%E5%A4%8D%E7%9B%98/" class="article-date">
+  <time class="dt-published" datetime="2026-11-20T10:18:27.000Z" itemprop="datePublished">2026-11-20</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/%E8%B8%A9%E5%9D%91%E5%A4%8D%E7%9B%98/">踩坑复盘</a>
+  </div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="p-name article-title" itemprop="headline name">
+      Win7 上跑通 ONNX 推理服务:从 Java 降级到 C++ 独立 exe 的全过程复盘(附 PE 导入表定位缺失 DLL)
+    </h1>
+  
+
+      </header>
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <h2 id="背景"><a href="#背景" class="headerlink" title="背景"></a>背景</h2><p>现场是一台 Win7 x64 机器,要跑一个 PRPD(局放)图像识别的 ONNX 推理服务。原项目是 JDK17 + Spring Boot 3.2.8 + onnxruntime Java,入口是 <code>ReasonController#prpdRecognize</code>,HTTP 端口 20011。在本机一切正常,到了 Win7 直接起不来。</p>
+<p>需求很硬:Win7 上零安装运行、接口和端口不变、返回 JSON 格式不变、模型继续读 <code>D:\CM3000-V7.00\onnx\</code>。</p>
+<p>最后交付的不是一个 jar,而是一个 <strong>2.4MB 的 C++ 独立 exe + 一堆随附 DLL</strong>,整个目录拷过去双击即用。中间踩的坑比预想多得多,最有价值的几个记在这里。</p>
+<h2 id="一、方案演进-为什么最后放弃了-Java"><a href="#一、方案演进-为什么最后放弃了-Java" class="headerlink" title="一、方案演进:为什么最后放弃了 Java"></a>一、方案演进:为什么最后放弃了 Java</h2><p>一开始的思路是”把 Java 降级到 Win7 能跑的版本”,这条路走了大半,最后才换到 C++。把演进过程列出来,能看清楚每一步的取舍:</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>方案</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>JDK17 + Spring Boot 3.2.8 原样部署</td>
+<td>Win7 上 JDK17 本身装不上&#x2F;跑不起来</td>
+</tr>
+<tr>
+<td>2</td>
+<td>降 JDK8 + Spring Boot 2.7.18</td>
+<td>能启动,<code>jakarta.servlet</code> 改回 <code>javax.servlet</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>精简 pom、删掉 OpenCV 接口</td>
+<td>依赖只剩 starter-web &#x2F; onnxruntime &#x2F; lombok</td>
+</tr>
+<tr>
+<td>4</td>
+<td>现场补 UCRT、VC++ 运行库、MySQL 5.7</td>
+<td>运行库装了一轮又一轮,推理仍报初始化失败</td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>换成 C++ 独立 exe + ORT C API</strong></td>
+<td>零安装,整个目录拷过去就能跑</td>
+</tr>
+</tbody></table>
+<p>关键判断在第 4 步之后:Java 版本的 ONNX Runtime native DLL 在 Win7 上始终加载不稳定,依赖链太长(JDK + Spring + ORT Java 封装 + native DLL + 一堆系统运行库),每一层都可能是坑。而现场要的只是一个 HTTP 接口 + 一次推理,用 C++ 直接调 ORT 的 C API、用 WinSock 起个 HTTP 服务,反而把依赖砍到最薄。</p>
+<p>用户原话:”不用 java,C++ 单独的也可以””Python 估计不行,win7 上面”——这个边界很现实:Python 打包进 Win7 依旧要带一堆东西,而 C++ 静态链接后 exe 只有 2.4MB。</p>
+<h2 id="二、关键决策与理由"><a href="#二、关键决策与理由" class="headerlink" title="二、关键决策与理由"></a>二、关键决策与理由</h2><h3 id="1-ONNX-Runtime-版本选-1-13-1"><a href="#1-ONNX-Runtime-版本选-1-13-1" class="headerlink" title="1. ONNX Runtime 版本选 1.13.1"></a>1. ONNX Runtime 版本选 1.13.1</h3><p>一开始查资料说”1.16.3 是最后支持 Win7 的版本”,后来用 PE 导入表逐个核对,<strong>改成 1.13.1</strong>。1.14 之后的版本引入了 Win8+ 的 API(如 <code>GetSystemTimePreciseAsFileTime</code>、<code>CreateFile2</code>、<code>PathCch*</code>、<code>EventSetInformation</code>),这些函数 Win7 系统里根本没有,加载时直接失败。</p>
+<p>判断方法不是看版本号猜,而是解析 DLL 的导入表看它到底引用了哪些系统函数——后面第三节详述。</p>
+<h3 id="2-模型不需要重导"><a href="#2-模型不需要重导" class="headerlink" title="2. 模型不需要重导"></a>2. 模型不需要重导</h3><p><code>model_weights_resnet_20251027_xf_added3.onnx</code> 是 IR 8 &#x2F; opset 17,ORT 1.13.1 实测能加载并推理成功(输入 <code>[1,1,100,100]</code>,输出 <code>[1,10]</code>)。用户一度提出”我可以重新导出”,验证后确认没必要——<strong>opset 17 不是问题,运行库版本才是问题</strong>。</p>
+<h3 id="3-删掉-OpenCV-接口"><a href="#3-删掉-OpenCV-接口" class="headerlink" title="3. 删掉 OpenCV 接口"></a>3. 删掉 OpenCV 接口</h3><p><code>org.tk:opencv:2.0</code> 这个 jar 是 Java17 字节码(class major 61),JDK8 加载不了,而它只服务于 <code>/prpdRecognizeMulti</code> 一个接口。按确认删掉该接口和依赖后,pom 干净了,JDK8 打包才走得通。</p>
+<h2 id="三、踩坑复盘-最有价值的部分"><a href="#三、踩坑复盘-最有价值的部分" class="headerlink" title="三、踩坑复盘(最有价值的部分)"></a>三、踩坑复盘(最有价值的部分)</h2><h3 id="坑-1-推理报-“Could-not-initialize-class-ai-onnxruntime-OrtEnvironment”"><a href="#坑-1-推理报-“Could-not-initialize-class-ai-onnxruntime-OrtEnvironment”" class="headerlink" title="坑 1:推理报 “Could not initialize class ai.onnxruntime.OrtEnvironment”"></a>坑 1:推理报 “Could not initialize class ai.onnxruntime.OrtEnvironment”</h3><p>这个错误信息极具误导性——看起来像模型加载失败,其实<strong>连模型都还没读到</strong>。它发生在 ORT native DLL 加载阶段。排查方向应该是”native DLL 缺什么系统依赖”,而不是”模型 opset 对不对”。</p>
+<h3 id="坑-2-KB2999226-提示”不适用”"><a href="#坑-2-KB2999226-提示”不适用”" class="headerlink" title="坑 2:KB2999226 提示”不适用”"></a>坑 2:KB2999226 提示”不适用”</h3><p>Win7 跑 VC++ 程序常要装 UCRT(通用 C 运行库),对应补丁 KB2999226。现场反馈”安装提示不适用”。这其实说明 <strong>UCRT 已经存在</strong>——<code>C:\Windows\System32\ucrtbase.dll</code> 在。真正缺的不是 ucrtbase 本体,而是配套的一组 API 转发 DLL。这个误判绕了一大圈。</p>
+<h3 id="坑-3-VC-运行库-14-50-不支持-Win7"><a href="#坑-3-VC-运行库-14-50-不支持-Win7" class="headerlink" title="坑 3:VC++ 运行库 14.50 不支持 Win7"></a>坑 3:VC++ 运行库 14.50 不支持 Win7</h3><p>现场 <code>C:\Windows\System32</code> 里已有 <code>vcruntime140.dll</code>,但版本是 <strong>14.50.35719.0</strong>。这个新版本内部用了 Win8+ API,Win7 加载不了。</p>
+<p>正确做法是从 <code>VC_redist.x64.exe</code>(14.44.35211,最后一个支持 Win7 的版本)里把 DLL 解出来,随程序携带:</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">VC_redist.x64.exe /x:目标目录 /q</span><br></pre></td></tr></table></figure>
+
+<p><code>/x:</code> 是”只解压不安装”,<code>/q</code> 是静默。解出来后挑 <code>vcruntime140.dll</code>、<code>vcruntime140_1.dll</code>、<code>msvcp140.dll</code> 三个放进 exe 同目录,系统一个字都不用改。对比一下就知道版本差异是真实存在的:</p>
+<table>
+<thead>
+<tr>
+<th>DLL</th>
+<th>交付目录(可用)</th>
+<th>系统目录(Win7 不可用)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>vcruntime140.dll</td>
+<td>14.44.35211.0</td>
+<td>14.50.35719.0</td>
+</tr>
+<tr>
+<td>vcruntime140_1.dll</td>
+<td>14.44.35211.0</td>
+<td>14.50.35719.0</td>
+</tr>
+<tr>
+<td>msvcp140.dll</td>
+<td>14.44.35211.0</td>
+<td>14.50.35719.0</td>
+</tr>
+</tbody></table>
+<h3 id="坑-4-最终元凶——api-ms-win-core-libraryloader-l1-2-0-dll-丢失"><a href="#坑-4-最终元凶——api-ms-win-core-libraryloader-l1-2-0-dll-丢失" class="headerlink" title="坑 4:最终元凶——api-ms-win-core-libraryloader-l1-2-0.dll 丢失"></a>坑 4:最终元凶——<code>api-ms-win-core-libraryloader-l1-2-0.dll</code> 丢失</h3><p>装完上述所有东西,现场弹窗仍是:</p>
+<figure class="highlight apache"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="attribute">api</span>-ms-win-core-libraryloader-l1-<span class="number">2</span>-<span class="number">0</span>.dll 丢失</span><br></pre></td></tr></table></figure>
+
+<p>这才是真正卡住的那一个。根因:<strong>ORT 1.13.1 直接引用这个 API 集 DLL,而 Win7 SP1 和 KB2999226 都不带它</strong>。前面装了半天都没补上,因为它压根不在那些包里。</p>
+<p>处理方式:把整套 UCRT &#x2F; API 转发 DLL 随 exe 一起放。来源有三处,都能追溯:</p>
+<table>
+<thead>
+<tr>
+<th>DLL</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>api-ms-win-crt-*.dll</code>(15 个)、<code>ucrtbase.dll</code>、<code>api-ms-win-eventing-provider-l1-1-0.dll</code></td>
+<td>KB2999226-x64.msu,用 <code>expand.exe</code> 解出</td>
+</tr>
+<tr>
+<td><code>api-ms-win-core-*.dll</code>(含报错那个)</td>
+<td><code>C:\Windows\System32\downlevel</code>,系统自带转发 DLL</td>
+</tr>
+<tr>
+<td><code>msvcp140.dll</code> &#x2F; <code>vcruntime140*.dll</code></td>
+<td>VC_redist.x64.exe 14.44 版,<code>/x:</code> 解出</td>
+</tr>
+</tbody></table>
+<p><code>expand.exe</code> 是 Windows 自带的解包工具(<code>.msu</code> &#x2F; <code>.cab</code> 套娃结构):</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">expand.exe -d Windows6.1-KB2999226-x64.msu       <span class="comment"># 列出内容,看到内层 cab</span></span><br><span class="line">expand.exe -F:* Windows6.1-KB2999226-x64.cab 目录  <span class="comment"># 把 cab 里的 DLL 全倒出来</span></span><br></pre></td></tr></table></figure>
+
+<p>最后 <code>cxx_infer</code> 目录里一共 50 个 DLL,和 exe 同层。注意 2015&#x2F;7&#x2F;18 这样的文件日期是正常的——KB2999226 是 2015 年发布的,补丁里的文件保留原始时间戳。</p>
+<h3 id="坑-5-怎么确定到底缺哪个-DLL——看-PE-导入表"><a href="#坑-5-怎么确定到底缺哪个-DLL——看-PE-导入表" class="headerlink" title="坑 5:怎么确定到底缺哪个 DLL——看 PE 导入表"></a>坑 5:怎么确定到底缺哪个 DLL——看 PE 导入表</h3><p>这是整个过程里最有用的一招。与其”报错一个补一个”,不如<strong>一次性把程序依赖的所有 DLL 读出来,跟系统里有的做对照</strong>。</p>
+<p>PE(Portable Executable)是 Windows 可执行文件格式,exe&#x2F;dll 都是。它的 PE 头里有一张”数据目录表”,第 2 项是<strong>导入表(Import Table)</strong>,记录了这个程序运行时要加载哪些 DLL、每个 DLL 里要用哪些函数。程序启动时 Windows 加载器按这张清单逐个去找,缺任何一个就弹窗报错。</p>
+<p>用 Python 直接解析这张表(只用标准库):</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">import</span> struct</span><br><span class="line">b = <span class="built_in">open</span>(<span class="string">&#x27;onnxruntime.dll&#x27;</span>,<span class="string">&#x27;rb&#x27;</span>).read()</span><br><span class="line"></span><br><span class="line">pe = struct.unpack_from(<span class="string">&#x27;&lt;I&#x27;</span>, b, <span class="number">0x3c</span>)[<span class="number">0</span>]      <span class="comment"># DOS 头里指向 PE 头的偏移</span></span><br><span class="line">opt = pe + <span class="number">4</span> + <span class="number">20</span>                              <span class="comment"># 跳过 PE 签名 + COFF 头</span></span><br><span class="line">magic = struct.unpack_from(<span class="string">&#x27;&lt;H&#x27;</span>, b, opt)[<span class="number">0</span>]</span><br><span class="line">dd = opt + (<span class="number">112</span> <span class="keyword">if</span> magic == <span class="number">0x20b</span> <span class="keyword">else</span> <span class="number">96</span>)     <span class="comment"># 数据目录起点(64/32 位不同)</span></span><br><span class="line">import_rva = struct.unpack_from(<span class="string">&#x27;&lt;I&#x27;</span>, b, dd + <span class="number">8</span>)[<span class="number">0</span>]   <span class="comment"># 第 2 项 = 导入表</span></span><br><span class="line"></span><br><span class="line"><span class="comment"># 每个导入描述符 20 字节,偏移 12 是该 DLL 名字的 RVA</span></span><br><span class="line">off = rva2off(import_rva)</span><br><span class="line">i = <span class="number">0</span></span><br><span class="line"><span class="keyword">while</span> <span class="literal">True</span>:</span><br><span class="line">    d = off + <span class="number">20</span> * i</span><br><span class="line">    oft, ts, fc, name_rva, ft = struct.unpack_from(<span class="string">&#x27;&lt;IIIII&#x27;</span>, b, d)</span><br><span class="line">    <span class="keyword">if</span> <span class="keyword">not</span> (oft <span class="keyword">or</span> name_rva <span class="keyword">or</span> ft):</span><br><span class="line">        <span class="keyword">break</span></span><br><span class="line">    <span class="built_in">print</span>(cstr(rva2off(name_rva)))   <span class="comment"># 打印 DLL 名</span></span><br><span class="line">    i += <span class="number">1</span></span><br></pre></td></tr></table></figure>
+
+<p><code>rva2off</code> 是 RVA(相对虚拟地址)到文件偏移的转换,按节表算;完整可运行版本见文末。跑出来的结果里明确有 <code>api-ms-win-core-libraryloader-l1-2-0.dll</code>,而 Win7 系统没有 → 一眼定位。</p>
+<p>这个方法还额外发现 <code>api-ms-win-core-processtopology-obsolete-l1-1-0.dll</code>、<code>api-ms-win-core-shlwapi-legacy-l1-1-0.dll</code> 等一批 Win7 默认不带的文件,一次性补齐,而不是报错一个补一个。</p>
+<h3 id="坑-6-中文-bat-在-Win7-cmd-里乱码"><a href="#坑-6-中文-bat-在-Win7-cmd-里乱码" class="headerlink" title="坑 6:中文 bat 在 Win7 cmd 里乱码"></a>坑 6:中文 bat 在 Win7 cmd 里乱码</h3><p>写了个带中文 <code>echo</code> 的启动脚本,Win7 的 cmd 默认 GBK,读 UTF-8 的 bat 直接乱套,出现”echo 不是内部或外部命令”这种诡异报错。</p>
+<p>解决:<strong>bat 一律纯 ASCII + CRLF 换行</strong>。中文说明单独放 <code>.md</code> 文件。脚本里连提示语都用英文,例如缺文件时输出 <code>Some DLLs are missing. Copy the WHOLE folder...</code>。</p>
+<h3 id="坑-7-C-编译的三个兼容细节"><a href="#坑-7-C-编译的三个兼容细节" class="headerlink" title="坑 7:C++ 编译的三个兼容细节"></a>坑 7:C++ 编译的三个兼容细节</h3><p>用 MinGW x64 编译 ORT C API 程序时遇到:</p>
+<ol>
+<li><code>_stdcall</code> 在 x64 GCC 不支持 → include ORT 头文件前临时 <code>#undef _WIN32</code></li>
+<li>SAL 宏(<code>_In_</code> 等)缺失 → 补一个 <code>specstrings.h</code></li>
+<li><code>ORTCHAR_T</code> 宽窄字符疑虑 → 实测窄 ASCII 模型路径可用</li>
+</ol>
+<p>编译命令(静态链接,避开运行库坑):</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">x86_64-w64-mingw32-g++.exe -std=c++11 -O2 -static \</span><br><span class="line">  -o aistatus_pd_server.exe aistatus_pd_server.cpp -lws2_32</span><br></pre></td></tr></table></figure>
+
+<h2 id="四、C-服务的实现要点"><a href="#四、C-服务的实现要点" class="headerlink" title="四、C++ 服务的实现要点"></a>四、C++ 服务的实现要点</h2><p>主程序 <code>aistatus_pd_server.cpp</code> 做四件事:</p>
+<ol>
+<li><strong>WinSock 起 HTTP 服务</strong>,监听 <code>0.0.0.0:20011</code>,支持 GET&#x2F;POST,保持和 Java 版一致的路由(<code>/prpdRecognize</code>、<code>/checkOnline</code>)</li>
+<li><strong>动态加载 <code>onnxruntime.dll</code></strong>,用 <code>LoadLibrary</code> &#x2F; <code>GetProcAddress</code> 调 C API,通过 <code>OrtApiBase::GetApi(ORT_API_VERSION)</code> 拿函数表</li>
+<li><strong>推理</strong>:输入 <code>[1,1,100,100]</code> float,softmax 后输出 10 个概率</li>
+<li><strong>JSON 返回</strong>,字段保持 <code>success</code> &#x2F; <code>message</code> &#x2F; <code>code</code> &#x2F; <code>result</code> &#x2F; <code>timestamp</code></li>
+</ol>
+<p>服务化用 <strong>NSSM 2.24 x64</strong>(支持 Win7)。普通 exe 不能直接 <code>sc create</code>——exe 不响应服务控制管理器,会启动超时。NSSM 包一层就能注册成服务,服务名 <code>aistatusPRPD</code>,自动启动,崩溃自动重启,stdout&#x2F;stderr 重定向到日志。</p>
+<h2 id="五、验证结果"><a href="#五、验证结果" class="headerlink" title="五、验证结果"></a>五、验证结果</h2><p>本机用最终 DLL 集合端到端复测:</p>
+<figure class="highlight apache"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="attribute">onnxruntime</span>.dll loaded</span><br><span class="line"><span class="attribute">ORT</span> API version <span class="number">13</span> ok</span><br><span class="line"><span class="attribute">model</span> loaded: ...xf_added3.onnx</span><br><span class="line"><span class="attribute">listening</span> <span class="literal">on</span> <span class="number">0.0.0.0:20111</span></span><br></pre></td></tr></table></figure>
+
+<ul>
+<li><code>GET /checkOnline</code> → <code>{&quot;success&quot;:true,&quot;code&quot;:200}</code></li>
+<li><code>POST /prpdRecognize</code>,10000 字节 body → 返回 10 个概率,格式与 Java 版一致</li>
+</ul>
+<p>现场 Win7 也已确认 exe 能正常启动。最终交付:</p>
+<ul>
+<li><code>PRPD推理服务-Win7独立版.zip</code> — 完整目录,50 个 DLL + exe + NSSM + 脚本 + 文档</li>
+<li><code>start_server.bat</code> — 双击启动,带关键 DLL 自检</li>
+<li><code>服务管理.bat</code> — 菜单式安装&#x2F;启停&#x2F;卸载服务</li>
+</ul>
+<p>现场只需:整个目录拷过去 → 双击 → 看到 <code>listening on 0.0.0.0:20011</code> 即成功。<strong>JDK、Spring、VC 运行库、KB 补丁全都不用装</strong>。</p>
+<h2 id="小结"><a href="#小结" class="headerlink" title="小结"></a>小结</h2><p>这次适配最大的教训是:<strong>“缺 DLL”类问题,靠猜和逐个试错效率极低,靠解析 PE 导入表一次性拿到完整依赖清单,再和现场系统做对照,才是正解。</strong></p>
+<p>几个可复用的判断:</p>
+<ul>
+<li>报错”初始化失败”时,先分清是 native 层还是业务层——模型还没加载就报错,一定是运行库</li>
+<li>运行库版本不是越新越好,Win7 认死 14.44 &#x2F; ORT 1.13.1 这条线</li>
+<li>“补丁不适用”可能意味着”已经装过了”,要去看实际 DLL 在不在</li>
+<li>交付 Win7 程序,把依赖 DLL 全部随程序携带(同目录),比让现场装运行库可靠得多</li>
+</ul>
+<p>整套排查做下来,C++ 版本反而比 Java 版本更简单、更可控——依赖薄到只有一层,出了问题一眼能看穿。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="https://cuishili-git.github.io/2026/11/20/2026-11-20-Win7%E8%B7%91%E9%80%9AONNX%E6%8E%A8%E7%90%86%E6%9C%8D%E5%8A%A1%E5%85%A8%E5%A4%8D%E7%9B%98/" data-id="cuidq7A8sKMl85J-WF6blz226" data-title="Win7 上跑通 ONNX 推理服务:从 Java 降级到 C++ 独立 exe 的全过程复盘(附 PE 导入表定位缺失 DLL)" class="article-share-link"><span class="fa fa-share">分享</span></a>
+      
+      
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/C/" rel="tag">C++</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/ONNX-Runtime/" rel="tag">ONNX Runtime</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/PE%E5%AF%BC%E5%85%A5%E8%A1%A8/" rel="tag">PE导入表</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Win7/" rel="tag">Win7</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E8%B8%A9%E5%9D%91%E5%A4%8D%E7%9B%98/" rel="tag">踩坑复盘</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+  
+    <a href="/2026/11/17/2026-11-17-%E7%BA%BF%E8%B7%AF%E7%9B%91%E6%B5%8B%E5%B9%B3%E5%8F%B0%E6%BA%90%E7%A0%81%E5%9C%B0%E5%9B%BE%E4%B8%8E%E5%88%86%E5%B1%82%E8%AE%BE%E8%AE%A1/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">后一篇</strong>
+      <div class="article-nav-title">线路在线监测平台源码地图：1.4 万行代码怎么分层，新手从哪读起</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%AE%9E%E6%88%98%E9%A1%B9%E7%9B%AE/">实战项目</a></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/">技术笔记</a></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%B8%A9%E5%9D%91%E5%A4%8D%E7%9B%98/">踩坑复盘</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签</h3>
+    <div class="widget">
+      <ul class="tag-list" itemprop="keywords"><li class="tag-list-item"><a class="tag-list-link" href="/tags/C/" rel="tag">C++</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/GPIO/" rel="tag">GPIO</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/GStreamer/" rel="tag">GStreamer</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/GitHub-Pages/" rel="tag">GitHub Pages</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/H-264/" rel="tag">H.264</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Hexo/" rel="tag">Hexo</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ISP/" rel="tag">ISP</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Linux/" rel="tag">Linux</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/MIPI/" rel="tag">MIPI</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ONNX-Runtime/" rel="tag">ONNX Runtime</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ONVIF/" rel="tag">ONVIF</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PDF%E7%BF%BB%E8%AF%91/" rel="tag">PDF翻译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PE%E5%AF%BC%E5%85%A5%E8%A1%A8/" rel="tag">PE导入表</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/PyQt6/" rel="tag">PyQt6</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/RV1126B/" rel="tag">RV1126B</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/V4L2/" rel="tag">V4L2</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/WebSocket/" rel="tag">WebSocket</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/Win7/" rel="tag">Win7</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/YOLO/" rel="tag">YOLO</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/ffmpeg/" rel="tag">ffmpeg</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/python-docx/" rel="tag">python-docx</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/rkaiq/" rel="tag">rkaiq</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/rv1126b/" rel="tag">rv1126b</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/watchdog/" rel="tag">watchdog</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E4%BA%A4%E5%8F%89%E7%BC%96%E8%AF%91/" rel="tag">交叉编译</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E4%BB%A3%E7%A0%81%E5%AF%BC%E8%AF%BB/" rel="tag">代码导读</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%88%86%E5%B1%82%E8%AE%BE%E8%AE%A1/" rel="tag">分层设计</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%8D%9A%E5%AE%A2/" rel="tag">博客</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%90%8E%E7%AB%AF%E6%9E%B6%E6%9E%84/" rel="tag">后端架构</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0/" rel="tag">图像参数</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" rel="tag">嵌入式</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%8E%92%E9%9A%9C/" rel="tag">排障</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" rel="tag">摄像头</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" rel="tag">新人向</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" rel="tag">流媒体</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" rel="tag">视觉大模型</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" rel="tag">视频编码</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" rel="tag">视频链路</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" rel="tag">调试复盘</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E8%B8%A9%E5%9D%91%E5%A4%8D%E7%9B%98/" rel="tag">踩坑复盘</a></li><li class="tag-list-item"><a class="tag-list-link" href="/tags/%E9%83%A8%E7%BD%B2/" rel="tag">部署</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/C/" style="font-size: 15px;">C++</a> <a href="/tags/GPIO/" style="font-size: 10px;">GPIO</a> <a href="/tags/GStreamer/" style="font-size: 17.5px;">GStreamer</a> <a href="/tags/GitHub-Pages/" style="font-size: 10px;">GitHub Pages</a> <a href="/tags/H-264/" style="font-size: 10px;">H.264</a> <a href="/tags/Hexo/" style="font-size: 10px;">Hexo</a> <a href="/tags/ISP/" style="font-size: 12.5px;">ISP</a> <a href="/tags/Linux/" style="font-size: 10px;">Linux</a> <a href="/tags/MIPI/" style="font-size: 10px;">MIPI</a> <a href="/tags/ONNX-Runtime/" style="font-size: 10px;">ONNX Runtime</a> <a href="/tags/ONVIF/" style="font-size: 10px;">ONVIF</a> <a href="/tags/PDF%E7%BF%BB%E8%AF%91/" style="font-size: 10px;">PDF翻译</a> <a href="/tags/PE%E5%AF%BC%E5%85%A5%E8%A1%A8/" style="font-size: 10px;">PE导入表</a> <a href="/tags/PyQt6/" style="font-size: 10px;">PyQt6</a> <a href="/tags/RV1126B/" style="font-size: 17.5px;">RV1126B</a> <a href="/tags/V4L2/" style="font-size: 15px;">V4L2</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/Win7/" style="font-size: 10px;">Win7</a> <a href="/tags/YOLO/" style="font-size: 10px;">YOLO</a> <a href="/tags/ffmpeg/" style="font-size: 10px;">ffmpeg</a> <a href="/tags/python-docx/" style="font-size: 10px;">python-docx</a> <a href="/tags/rkaiq/" style="font-size: 12.5px;">rkaiq</a> <a href="/tags/rv1126b/" style="font-size: 10px;">rv1126b</a> <a href="/tags/watchdog/" style="font-size: 10px;">watchdog</a> <a href="/tags/%E4%BA%A4%E5%8F%89%E7%BC%96%E8%AF%91/" style="font-size: 10px;">交叉编译</a> <a href="/tags/%E4%BB%A3%E7%A0%81%E5%AF%BC%E8%AF%BB/" style="font-size: 10px;">代码导读</a> <a href="/tags/%E5%88%86%E5%B1%82%E8%AE%BE%E8%AE%A1/" style="font-size: 10px;">分层设计</a> <a href="/tags/%E5%8D%9A%E5%AE%A2/" style="font-size: 10px;">博客</a> <a href="/tags/%E5%90%8E%E7%AB%AF%E6%9E%B6%E6%9E%84/" style="font-size: 10px;">后端架构</a> <a href="/tags/%E5%9B%BE%E5%83%8F%E5%8F%82%E6%95%B0/" style="font-size: 10px;">图像参数</a> <a href="/tags/%E5%B5%8C%E5%85%A5%E5%BC%8F/" style="font-size: 20px;">嵌入式</a> <a href="/tags/%E6%8E%92%E9%9A%9C/" style="font-size: 10px;">排障</a> <a href="/tags/%E6%91%84%E5%83%8F%E5%A4%B4/" style="font-size: 10px;">摄像头</a> <a href="/tags/%E6%96%B0%E4%BA%BA%E5%90%91/" style="font-size: 15px;">新人向</a> <a href="/tags/%E6%B5%81%E5%AA%92%E4%BD%93/" style="font-size: 10px;">流媒体</a> <a href="/tags/%E8%A7%86%E8%A7%89%E5%A4%A7%E6%A8%A1%E5%9E%8B/" style="font-size: 10px;">视觉大模型</a> <a href="/tags/%E8%A7%86%E9%A2%91%E7%BC%96%E7%A0%81/" style="font-size: 10px;">视频编码</a> <a href="/tags/%E8%A7%86%E9%A2%91%E9%93%BE%E8%B7%AF/" style="font-size: 10px;">视频链路</a> <a href="/tags/%E8%B0%83%E8%AF%95%E5%A4%8D%E7%9B%98/" style="font-size: 12.5px;">调试复盘</a> <a href="/tags/%E8%B8%A9%E5%9D%91%E5%A4%8D%E7%9B%98/" style="font-size: 10px;">踩坑复盘</a> <a href="/tags/%E9%83%A8%E7%BD%B2/" style="font-size: 10px;">部署</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/11/">十一月 2026</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">最新文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2026/11/20/2026-11-20-Win7%E8%B7%91%E9%80%9AONNX%E6%8E%A8%E7%90%86%E6%9C%8D%E5%8A%A1%E5%85%A8%E5%A4%8D%E7%9B%98/">Win7 上跑通 ONNX 推理服务:从 Java 降级到 C++ 独立 exe 的全过程复盘(附 PE 导入表定位缺失 DLL)</a>
+          </li>
+        
+          <li>
+            <a href="/2026/11/17/2026-11-17-%E7%BA%BF%E8%B7%AF%E7%9B%91%E6%B5%8B%E5%B9%B3%E5%8F%B0%E6%BA%90%E7%A0%81%E5%9C%B0%E5%9B%BE%E4%B8%8E%E5%88%86%E5%B1%82%E8%AE%BE%E8%AE%A1/">线路在线监测平台源码地图：1.4 万行代码怎么分层，新手从哪读起</a>
+          </li>
+        
+          <li>
+            <a href="/2026/11/17/2026-11-17-%E4%BA%A4%E5%8F%89%E7%BC%96%E8%AF%91%E6%89%93%E5%8C%85%E9%83%A8%E7%BD%B2%E5%85%A8%E6%B5%81%E7%A8%8B/">从改一行代码到板上生效：交叉编译、打包、部署、回滚全流程</a>
+          </li>
+        
+          <li>
+            <a href="/2026/11/17/2026-11-17-%E5%90%8E%E7%AB%AF%E5%85%B3%E9%94%AE%E4%BB%A3%E7%A0%81%E5%AF%BC%E8%AF%BB-%E4%B8%83%E4%B8%AA%E5%87%BD%E6%95%B0/">读懂这 7 个函数，就摸清了 1.4 万行后端代码</a>
+          </li>
+        
+          <li>
+            <a href="/2026/11/10/2026-11-10-RV1126B%E8%A7%86%E9%A2%91%E9%80%9A%E9%81%93%E5%AE%9E%E6%88%98-MIPI%E4%B8%8EONVIF-%E6%8A%93%E5%9B%BE%E9%AA%8C%E6%B4%BB%E4%B8%8E%E5%BD%95%E5%83%8F%E5%91%BD%E4%BB%A4/">RV1126B 视频通道实战：v4l2 命令行抓图、录像与 MIPI/ONVIF 双路排查</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      
+      &copy; 2026 老崔<br>
+      Powered by <a href="https://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+
+<script src="/js/jquery-3.6.4.min.js"></script>
+
+
+
+  
+<script src="/fancybox/jquery.fancybox.min.js"></script>
+
+
+
+
+<script src="/js/script.js"></script>
+
+
+
+
+
+  </div>
+</body>
+</html>
